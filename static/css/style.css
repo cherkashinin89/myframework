@@ -1,0 +1,18 @@
+/* Шапка админки — фиксируется сверху при прокрутке */
+.admin-header {
+    position: sticky;
+    top: 0;
+    z-index: 1030;
+}
+
+/* Чуть компактнее кнопки в шапке админки */
+.admin-header .btn {
+    white-space: nowrap;
+}
+
+/* На маленьких экранах — перенос кнопок на новую строку */
+@media (max-width: 992px) {
+    .admin-header nav {
+        flex-wrap: wrap;
+    }
+}

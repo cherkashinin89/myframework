@@ -1,0 +1,125 @@
+{% extends 'base.html' %}
+
+{% block title %}{{ article.title }} - Мой Сайт{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="{{ url_for('index') }}">Главная</a></li>
+        <li class="breadcrumb-item active">{{ article.title }}</li>
+    </ol>
+</nav>
+
+<article>
+    <h1 class="mb-3">{{ article.title }}</h1>
+
+    <div class="text-muted mb-4">
+        <small>
+            Опубликовано: {{ article.created_at.strftime('%d.%m.%Y %H:%M') }}
+            {% if article.updated_at != article.created_at %}
+                | Обновлено: {{ article.updated_at.strftime('%d.%m.%Y %H:%M') }}
+            {% endif %}
+        </small>
+        {% if article.authors %}
+            <br>
+            <small>
+                Автор(ы):
+                {% for author in article.authors %}
+                    <span class="badge bg-info text-dark">{{ author.username }}</span>
+                {% endfor %}
+            </small>
+        {% endif %}
+    </div>
+
+    {% if article.summary %}
+        <div class="alert alert-light border-start border-4 border-primary">
+            <em>{{ article.summary }}</em>
+        </div>
+    {% endif %}
+
+    <div class="article-content">
+        {{ article.content|safe }}
+    </div>
+</article>
+
+{# Альбомы, привязанные к статье #}
+{% set article_albums = article.albums %}
+{% if article_albums %}
+    <hr class="my-5">
+    <h3 class="mb-3"><i class="bi bi-images"></i> Фотогалереи</h3>
+
+    {% for album in article_albums %}
+        <div class="album-block mb-5">
+            <h5 class="mb-3">{{ album.title }}</h5>
+            {% if album.description %}
+                <p class="text-muted">{{ album.description }}</p>
+            {% endif %}
+
+            {% if album.photos %}
+                {# Карусель #}
+                <div id="carousel-{{ album.id }}" class="carousel slide mb-3" data-bs-ride="carousel">
+                    <div class="carousel-indicators">
+                        {% for p in album.photos %}
+                            <button type="button" data-bs-target="#carousel-{{ album.id }}"
+                                    data-bs-slide-to="{{ loop.index0 }}"
+                                    class="{% if loop.first %}active{% endif %}"></button>
+                        {% endfor %}
+                    </div>
+                    <div class="carousel-inner bg-dark">
+                        {% for p in album.photos %}
+                            <div class="carousel-item {% if loop.first %}active{% endif %}">
+                                <img src="{{ url_for('uploaded_file', filename=p.file.stored_name) }}"
+                                     class="d-block w-100"
+                                     style="max-height: 60vh; object-fit: contain;"
+                                     alt="{{ p.caption or album.title }}">
+                                {% if p.caption %}
+                                    <div class="carousel-caption d-none d-md-block">
+                                        <p>{{ p.caption }}</p>
+                                    </div>
+                                {% endif %}
+                            </div>
+                        {% endfor %}
+                    </div>
+                    <button class="carousel-control-prev" type="button"
+                            data-bs-target="#carousel-{{ album.id }}" data-bs-slide="prev">
+                        <span class="carousel-control-prev-icon"></span>
+                    </button>
+                    <button class="carousel-control-next" type="button"
+                            data-bs-target="#carousel-{{ album.id }}" data-bs-slide="next">
+                        <span class="carousel-control-next-icon"></span>
+                    </button>
+                </div>
+
+                {# Миниатюры #}
+                <div class="row g-2">
+                    {% for p in album.photos %}
+                        <div class="col-4 col-md-3 col-lg-2">
+                            <a href="#carousel-{{ album.id }}"
+                               data-bs-target="#carousel-{{ album.id }}"
+                               data-bs-slide-to="{{ loop.index0 }}">
+                                <img src="{{ url_for('uploaded_file', filename=p.file.stored_name) }}"
+                                     class="img-fluid"
+                                     style="aspect-ratio: 1/1; object-fit: cover; cursor: pointer;"
+                                     alt="">
+                            </a>
+                        </div>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <p class="text-muted">В альбоме нет фотографий.</p>
+            {% endif %}
+        </div>
+    {% endfor %}
+{% endif %}
+
+<style>
+    .article-content img,
+    .page-content img { max-width: 100%; height: auto; }
+    .article-content table,
+    .page-content table { border-collapse: collapse; width: 100%; }
+    .article-content table td,
+    .article-content table th,
+    .page-content table td,
+    .page-content table th { border: 1px solid #ccc; padding: 6px 10px; }
+</style>
+{% endblock %}

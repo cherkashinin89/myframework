@@ -1,0 +1,42 @@
+{% extends 'base.html' %}
+{% from '_pagination.html' import render_pagination with context %}
+
+{% block title %}Главная - Мой Сайт{% endblock %}
+
+{% block content %}
+<h2 class="mb-4">Последние статьи</h2>
+
+{% if articles %}
+    <div class="row">
+        {% for article in articles %}
+            <div class="col-md-6 mb-4">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">
+                            <a href="{{ url_for('show_article', id=article.id) }}"
+                               class="text-decoration-none">
+                                {{ article.title }}
+                            </a>
+                        </h5>
+                        {% if article.summary %}
+                            <p class="card-text text-muted">{{ article.summary }}</p>
+                        {% endif %}
+                        <p class="card-text">
+                            <small class="text-muted">
+                                Опубликовано: {{ article.created_at.strftime('%d.%m.%Y') }}
+                            </small>
+                        </p>
+                    </div>
+                </div>
+            </div>
+        {% endfor %}
+    </div>
+
+    {# Пагинация #}
+    {{ render_pagination(pagination, 'index') }}
+{% else %}
+    <div class="alert alert-info">
+        Пока нет опубликованных статей.
+    </div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,159 @@
+{% extends 'admin/base_admin.html' %}
+{% from '_pagination.html' import render_pagination with context %}
+
+{% block title %}Файловый менеджер{% endblock %}
+
+{% block content %}
+<!-- Заголовок и кнопки -->
+<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+    <h2 class="mb-0">
+        <i class="bi bi-folder2-open"></i> Файловый менеджер
+    </h2>
+    <div class="d-flex gap-2">
+        <a href="{{ url_for('admin_files_archive') }}" class="btn btn-outline-warning">
+            <i class="bi bi-archive"></i> Архивация по периоду
+        </a>
+        <button class="btn btn-primary" data-bs-toggle="collapse" data-bs-target="#uploadPanel">
+            <i class="bi bi-upload"></i> Загрузить файл
+        </button>
+    </div>
+</div>
+
+<!-- Панель загрузки файла (сворачиваемая) -->
+<div class="collapse mb-3" id="uploadPanel">
+    <div class="card">
+        <div class="card-body">
+            <form method="POST"
+                  action="{{ url_for('admin_file_upload') }}"
+                  enctype="multipart/form-data">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+                <div class="row g-2 align-items-end">
+                    <div class="col-md-5">
+                        <label class="form-label">Файл</label>
+                        <input type="file" name="file" class="form-control" required>
+                    </div>
+                    <div class="col-md-5">
+                        <label class="form-label">Описание (необязательно)</label>
+                        <input type="text" name="description" class="form-control" maxlength="500">
+                    </div>
+                    <div class="col-md-2">
+                        <button type="submit" class="btn btn-success w-100">
+                            <i class="bi bi-cloud-upload"></i> Загрузить
+                        </button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Фильтры по типу + статистика -->
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <div class="btn-group flex-wrap" role="group">
+        {% set filters = [('all', 'Все', 'secondary'),
+                          ('image', 'Изображения', 'info'),
+                          ('video', 'Видео', 'warning'),
+                          ('audio', 'Аудио', 'primary'),
+                          ('document', 'Документы', 'success'),
+                          ('archive', 'Архивы', 'dark'),
+                          ('other', 'Прочее', 'secondary')] %}
+        {% for key, label, color in filters %}
+            <a href="{{ url_for('admin_files', type=key, sort=sort_by, dir=direction) }}"
+               class="btn btn-sm {% if type_filter == key %}btn-{{ color }}{% else %}btn-outline-{{ color }}{% endif %}">
+                {{ label }} <span class="badge bg-light text-dark">{{ type_counts[key] }}</span>
+            </a>
+        {% endfor %}
+    </div>
+
+    <div class="text-muted small">
+    Всего: <strong>{{ pagination.total }}</strong> файлов,
+    объём: <strong>{{ total_size | human_size_bytes }}</strong>
+   </div>
+</div>
+
+<!-- Таблица файлов -->
+{% if files %}
+    <div class="table-responsive">
+        <table class="table table-striped table-hover align-middle">
+            <thead class="table-dark">
+                <tr>
+                    {% set cols = [
+                        ('original_name', 'Имя'),
+                        ('file_type', 'Тип'),
+                        ('size', 'Размер'),
+                        ('uploaded_at', 'Дата загрузки')
+                    ] %}
+                    {% for key, label in cols %}
+                        {% set new_dir = 'asc' if (sort_by == key and direction == 'desc') else 'desc' %}
+                        {% set arrow = '' %}
+                        {% if sort_by == key %}
+                            {% set arrow = '↑' if direction == 'asc' else '↓' %}
+                        {% endif %}
+                        <th>
+                            <a href="{{ url_for('admin_files', sort=key, dir=new_dir, type=type_filter) }}"
+                               class="text-white text-decoration-none">
+                                {{ label }} <small>{{ arrow }}</small>
+                            </a>
+                        </th>
+                    {% endfor %}
+                    <th style="width: 180px;">Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for f in files %}
+                    <tr>
+                        <td>
+                            <i class="bi {{ f.icon() }} fs-5 me-2 text-secondary"></i>
+                            <a href="{{ url_for('admin_file_download', id=f.id) }}"
+                               class="text-decoration-none">
+                                {{ f.original_name }}
+                            </a>
+                            {% if f.description %}
+                                <br><small class="text-muted">{{ f.description }}</small>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <span class="badge bg-secondary">{{ f.file_type }}</span>
+                        </td>
+                        <td>{{ f.size_human() }}</td>
+                        <td>
+                            <small>{{ f.uploaded_at.strftime('%d.%m.%Y %H:%M') }}</small>
+                            {% if f.uploaded_by %}
+                                <br><small class="text-muted">от {{ f.uploaded_by.username }}</small>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <a href="{{ url_for('admin_file_download', id=f.id) }}"
+                               class="btn btn-sm btn-outline-primary">
+                                <i class="bi bi-download"></i>
+                            </a>
+                            <form method="POST"
+                                  action="{{ url_for('admin_file_delete', id=f.id) }}"
+                                  class="d-inline"
+                                  onsubmit="return confirm('Удалить файл «{{ f.original_name }}»?');">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" class="btn btn-sm btn-outline-danger">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {# Пагинация с сохранением сортировки и фильтра #}
+    {{ render_pagination(pagination, 'admin_files',
+                         sort=sort_by, dir=direction, type=type_filter) }}	
+{% else %}
+    <div class="alert alert-info text-center py-5">
+        <i class="bi bi-folder-x fs-1 d-block mb-3"></i>
+        <h5 class="mb-2">Файлов пока нет</h5>
+        <p class="mb-3">Загрузите первый файл — он появится здесь.</p>
+        <button class="btn btn-primary" data-bs-toggle="collapse" data-bs-target="#uploadPanel">
+            <i class="bi bi-upload"></i> Загрузить первый файл
+        </button>
+    </div>
+{% endif %}
+{% endblock %}

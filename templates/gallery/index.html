@@ -1,0 +1,63 @@
+{% extends 'base.html' %}
+{% from '_pagination.html' import render_pagination with context %}
+
+{% block title %}Фотогалерея{% endblock %}
+
+{% block content %}
+<h2 class="mb-4">Фотогалерея</h2>
+
+{% if albums %}
+    <div class="row g-3">
+        {% for album in albums %}
+            <div class="col-6 col-md-4 col-lg-3">
+                <div class="card h-100 album-card">
+                    <a href="{{ url_for('gallery_album', slug=album.slug) }}"
+                       class="text-decoration-none">
+                        {# Обложка альбома — cover_photo или первый фото #}
+                        {% set cover = album.cover_photo or (album.photos[0] if album.photos else None) %}
+                        {% if cover %}
+                            <img src="{{ url_for('uploaded_file', filename=cover.file.stored_name) }}"
+                                 class="card-img-top album-cover"
+                                 alt="{{ album.title }}">
+                        {% else %}
+                            <div class="album-cover album-cover-empty d-flex align-items-center justify-content-center bg-light">
+                                <i class="bi bi-images fs-1 text-muted"></i>
+                            </div>
+                        {% endif %}
+                    </a>
+                    <div class="card-body">
+                        <h6 class="card-title mb-1">
+                            <a href="{{ url_for('gallery_album', slug=album.slug) }}"
+                               class="text-decoration-none">
+                                {{ album.title }}
+                            </a>
+                        </h6>
+                        <small class="text-muted">
+                            {{ album.photos|length }} фото
+                        </small>
+                    </div>
+                </div>
+            </div>
+        {% endfor %}
+    </div>
+
+    {{ render_pagination(pagination, 'gallery_index') }}
+{% else %}
+    <div class="alert alert-info text-center py-4">
+        <i class="bi bi-images fs-1 d-block mb-2"></i>
+        Альбомов пока нет.
+    </div>
+{% endif %}
+
+<style>
+.album-cover {
+    aspect-ratio: 4 / 3;
+    object-fit: cover;
+    width: 100%;
+    display: block;
+}
+.album-cover-empty { aspect-ratio: 4 / 3; }
+.album-card { transition: transform .15s; }
+.album-card:hover { transform: translateY(-3px); }
+</style>
+{% endblock %}

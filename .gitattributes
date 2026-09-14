@@ -1,0 +1,36 @@
+# Все текстовые файлы — LF в репозитории, системные переносы в рабочей копии
+* text=auto eol=lf
+
+# Явно указать текстовые типы (для корректного diff и merge)
+*.py    text diff=python
+*.html  text diff=html
+*.css   text
+*.js    text
+*.json  text
+*.md    text
+*.txt   text
+*.cfg   text
+*.ini   text
+*.sql   text
+*.sh    text eol=lf
+
+# Бинарные файлы — не трогать
+*.jpg   binary
+*.jpeg  binary
+*.png   binary
+*.gif   binary
+*.ico   binary
+*.svg   text
+*.pdf   binary
+*.zip   binary
+*.tar   binary
+*.gz    binary
+*.db    binary
+*.sqlite binary
+
+# Файлы TinyMCE — не трогать, это сторонняя библиотека
+static/tinymce/** -text
+
+# Файлы из файлового менеджера — не трогать
+uploads/** -text
+archives/** -text

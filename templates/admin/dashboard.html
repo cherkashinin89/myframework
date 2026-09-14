@@ -1,0 +1,151 @@
+{% extends 'admin/base_admin.html' %}
+
+{% block title %}Дашборд - Админка{% endblock %}
+
+{% block content %}
+<h2 class="mb-4"><i class="bi bi-speedometer2"></i> Панель управления</h2>
+
+<!-- Карточки статистики -->
+<div class="row g-3">
+    <div class="col-12 col-sm-6 col-lg-4 col-xl-2">
+        <div class="card bg-primary text-white h-100">
+            <div class="card-body d-flex flex-column">
+                <h6 class="card-title mb-2"><i class="bi bi-people"></i> Пользователи</h6>
+                <p class="display-6 mb-3">{{ stats.users }}</p>
+                <a href="{{ url_for('admin_users') }}" class="text-white mt-auto text-decoration-none small">
+                    Управлять <i class="bi bi-arrow-right"></i>
+                </a>
+            </div>
+        </div>
+    </div>
+    <div class="col-12 col-sm-6 col-lg-4 col-xl-2">
+        <div class="card bg-success text-white h-100">
+            <div class="card-body d-flex flex-column">
+                <h6 class="card-title mb-2"><i class="bi bi-file-text"></i> Статьи</h6>
+                <p class="display-6 mb-3">{{ stats.articles }}</p>
+                <a href="{{ url_for('admin_articles') }}" class="text-white mt-auto text-decoration-none small">
+                    Управлять <i class="bi bi-arrow-right"></i>
+                </a>
+            </div>
+        </div>
+    </div>
+    <div class="col-12 col-sm-6 col-lg-4 col-xl-2">
+        <div class="card bg-info text-white h-100">
+            <div class="card-body d-flex flex-column">
+                <h6 class="card-title mb-2"><i class="bi bi-file-earmark"></i> Страницы</h6>
+                <p class="display-6 mb-3">{{ stats.pages }}</p>
+                <a href="{{ url_for('admin_pages') }}" class="text-white mt-auto text-decoration-none small">
+                    Управлять <i class="bi bi-arrow-right"></i>
+                </a>
+            </div>
+        </div>
+    </div>
+    <div class="col-12 col-sm-6 col-lg-4 col-xl-2">
+        <div class="card bg-warning text-dark h-100">
+            <div class="card-body d-flex flex-column">
+                <h6 class="card-title mb-2"><i class="bi bi-list"></i> Пункты меню</h6>
+                <p class="display-6 mb-3">{{ stats.menu_items }}</p>
+                <a href="{{ url_for('admin_menu') }}" class="text-dark mt-auto text-decoration-none small">
+                    Управлять <i class="bi bi-arrow-right"></i>
+                </a>
+            </div>
+        </div>
+    </div>
+    <div class="col-12 col-sm-6 col-lg-4 col-xl-2">
+        <div class="card bg-secondary text-white h-100">
+            <div class="card-body d-flex flex-column">
+                <h6 class="card-title mb-2"><i class="bi bi-folder2-open"></i> Файлы</h6>
+                <p class="display-6 mb-3">{{ stats.files }}</p>
+                <a href="{{ url_for('admin_files') }}" class="text-white mt-auto text-decoration-none small">
+                    Управлять <i class="bi bi-arrow-right"></i>
+                </a>
+            </div>
+        </div>
+    </div>
+    <div class="col-12 col-sm-6 col-lg-4 col-xl-2">
+        <div class="card bg-danger text-white h-100">
+            <div class="card-body d-flex flex-column">
+                <h6 class="card-title mb-2"><i class="bi bi-images"></i> Альбомы</h6>
+                <p class="display-6 mb-3">{{ stats.albums }}</p>
+                <a href="{{ url_for('admin_albums') }}" class="text-white mt-auto text-decoration-none small">
+                    Управлять <i class="bi bi-arrow-right"></i>
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Быстрые действия -->
+<div class="row g-3 mt-3">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <strong><i class="bi bi-lightning-charge"></i> Быстрые действия</strong>
+            </div>
+            <div class="card-body d-flex flex-wrap gap-2">
+                <a href="{{ url_for('admin_article_create') }}" class="btn btn-outline-success btn-sm">
+                    <i class="bi bi-plus-lg"></i> Новая статья
+                </a>
+                <a href="{{ url_for('admin_page_create') }}" class="btn btn-outline-info btn-sm">
+                    <i class="bi bi-plus-lg"></i> Новая страница
+                </a>
+                <a href="{{ url_for('admin_album_create') }}" class="btn btn-outline-danger btn-sm">
+                    <i class="bi bi-plus-lg"></i> Новый альбом
+                </a>
+                <a href="{{ url_for('admin_user_create') }}" class="btn btn-outline-primary btn-sm">
+                    <i class="bi bi-plus-lg"></i> Новый пользователь
+                </a>
+                <a href="{{ url_for('admin_files') }}" class="btn btn-outline-secondary btn-sm">
+                    <i class="bi bi-upload"></i> Загрузить файл
+                </a>
+                <a href="{{ url_for('index') }}" class="btn btn-outline-dark btn-sm ms-auto">
+                    <i class="bi bi-box-arrow-up-right"></i> Открыть сайт
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ПОСЛЕДНИЕ АЛЬБОМЫ -->
+{% if recent_albums %}
+<div class="row g-3 mt-3">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <strong><i class="bi bi-images"></i> Последние альбомы</strong>
+            </div>
+            <div class="card-body">
+                <div class="row g-2">
+                    {% for album in recent_albums %}
+                        <div class="col-6 col-md-3">
+                            <a href="{{ url_for('admin_album_edit', id=album.id) }}"
+                               class="text-decoration-none text-dark">
+                                {% set cover = album.cover_photo %}
+                                {% if not cover and album.photos %}
+                                    {% set cover = album.photos[0] %}
+                                {% endif %}
+                                {% if cover and cover.file %}
+                                    <img src="{{ url_for('uploaded_file', filename=cover.file.stored_name) }}"
+                                         class="img-fluid rounded mb-1"
+                                         style="aspect-ratio: 4/3; object-fit: cover; width: 100%;"
+                                         alt="{{ album.title }}">
+                                {% else %}
+                                    <div class="bg-light rounded mb-1 d-flex align-items-center justify-content-center"
+                                         style="aspect-ratio: 4/3;">
+                                        <i class="bi bi-image text-muted fs-3"></i>
+                                    </div>
+                                {% endif %}
+                                <small>
+                                    <strong>{{ album.title }}</strong><br>
+                                    <span class="text-muted">{{ album.photos|length }} фото</span>
+                                </small>
+                            </a>
+                        </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
