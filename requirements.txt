@@ -6,3 +6,4 @@ WTForms==3.1.1            # Валидация форм
 Werkzeug==3.0.1           # Утилиты WSGI (пароли, безопасность)
 gunicorn==21.2.0          # WSGI-сервер для продакшена
 email_validator==2.1.1    # E-mail валидатор
+psutil==5.9.8Pillow==10.3.0

@@ -31,8 +31,17 @@
                     От 3 до 80 символов. Латиница, цифры, подчёркивание.
                 </small>
                 {% for error in form.username.errors %}
-                    <div class="invalid-feedback">{{ error }}</div>
+                <div class="invalid-feedback">{{ error }}</div>
                 {% endfor %}
+            </div>
+
+            <div class="mb-3">
+                {{ form.full_name.label(class="form-label") }}
+                {{ form.full_name(class="form-control" + (" is-invalid" if form.full_name.errors else "")) }}
+                {% for e in form.full_name.errors %}
+                <div class="invalid-feedback">{{ e }}</div>
+                {% endfor %}
+                <small class="text-muted">{{ form.full_name.description }}</small>
             </div>
 
             <!-- Email -->
@@ -40,7 +49,7 @@
                 {{ form.email.label(class="form-label") }}
                 {{ form.email(class="form-control" + (" is-invalid" if form.email.errors else "")) }}
                 {% for error in form.email.errors %}
-                    <div class="invalid-feedback">{{ error }}</div>
+                <div class="invalid-feedback">{{ error }}</div>
                 {% endfor %}
             </div>
 
@@ -49,35 +58,42 @@
                 {{ form.password.label(class="form-label") }}
                 {{ form.password(class="form-control" + (" is-invalid" if form.password.errors else "")) }}
                 {% if user %}
-                    <small class="form-text text-muted">
-                        Оставьте поле пустым, чтобы сохранить текущий пароль.
-                    </small>
+                <small class="form-text text-muted">
+                    Оставьте поле пустым, чтобы сохранить текущий пароль.
+                </small>
                 {% else %}
-                    <small class="form-text text-muted">
-                        Минимум 6 символов.
-                    </small>
+                <small class="form-text text-muted">
+                    Минимум 6 символов.
+                </small>
                 {% endif %}
                 {% for error in form.password.errors %}
-                    <div class="invalid-feedback">{{ error }}</div>
+                <div class="invalid-feedback">{{ error }}</div>
                 {% endfor %}
             </div>
 
             <!-- Подтверждение пароля -->
             <div class="mb-3">
                 {{ form.confirm_password.label(class="form-label") }}
-                {{ form.confirm_password(class="form-control" + (" is-invalid" if form.confirm_password.errors else "")) }}
+                {{ form.confirm_password(class="form-control" + (" is-invalid" if form.confirm_password.errors else ""))
+                }}
                 {% for error in form.confirm_password.errors %}
-                    <div class="invalid-feedback">{{ error }}</div>
+                <div class="invalid-feedback">{{ error }}</div>
                 {% endfor %}
             </div>
 
             <!-- Флаг администратора -->
-            <div class="form-check mb-3">
-                {{ form.is_admin(class="form-check-input") }}
-                {{ form.is_admin.label(class="form-check-label") }}
-                <small class="form-text text-muted d-block">
-                    Администраторы получают доступ к управлению пользователями.
-                </small>
+            <div class="mb-3">
+                {{ form.role.label(class="form-label") }}
+                {{ form.role(class="form-select" + (" is-invalid" if form.role.errors else "")) }}
+                {% for error in form.role.errors %}
+                <div class="invalid-feedback">{{ error }}</div>
+                {% endfor %}
+                <div class="form-text">
+                    <strong>Наблюдатель</strong> — только публичная часть.<br>
+                    <strong>Пользователь</strong> — публичная часть + облако + почта.<br>
+                    <strong>Редактор</strong> — контент в админке без системных настроек.<br>
+                    <strong>Администратор</strong> — полный доступ.
+                </div>
             </div>
 
             <!-- Кнопки -->

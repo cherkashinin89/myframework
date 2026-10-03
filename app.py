@@ -1,26 +1,43 @@
-# app.py - Основной файл приложения
+# app.py - Основной файл приложения !! 
 import os
 from datetime import datetime
-
 from flask import (
     Flask, render_template, redirect, url_for, flash, request,
-    jsonify, send_from_directory
+    jsonify, send_from_directory, current_app
 )
 from flask_login import (
     login_user, logout_user, login_required, current_user
 )
-
+from auth_utils import admin_required, editor_required, user_required, role_required
 from config import Config
 from extensions import db, login_manager, csrf, migrate
-from models import User, Article, Page, MenuItem, UploadedFile, Album, Photo
 from forms import (
     LoginForm, UserForm, ArticleForm, PageForm, MenuItemForm,
-    UploadFileForm, ArchiveForm, AlbumForm, AlbumPhotosForm
+    UploadFileForm, ArchiveForm, AlbumForm, AlbumPhotosForm,
+    SiteSettingsForm
 )
 from file_utils import (
     get_file_type, guess_mime, make_stored_name,
     human_size, create_archive
 )
+from image_utils import (
+    can_thumbnail, thumbnail_name_for, create_thumbnail
+)
+from system_stats import get_system_stats
+from dotenv import load_dotenv
+load_dotenv()
+from backup_utils import (
+    is_mounted, get_disk_info, create_full_backup, list_backups,
+    mount_disk, unmount_disk, sync_buffers
+)
+from models import (
+    User, Article, Page, MenuItem, UploadedFile,
+    Album, Photo, SiteSettings, CloudFile, CloudShare,
+)
+from search_service import (
+    search_all, search_articles, search_pages, search_files, highlight
+)
+from slug_utils import slugify, unique_slug
 
 # === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
 
@@ -31,6 +48,115 @@ def get_page():
     except (TypeError, ValueError):
         return 1
 
+def _menu_depth(item, max_depth=10):
+    """Вычисляет глубину пункта меню (0 для корня)."""
+    depth = 0
+    current = item
+    while current.parent_id and depth < max_depth:
+        current = MenuItem.query.get(current.parent_id)
+        if not current:
+            break
+        depth += 1
+    return depth
+
+
+def _get_menu_parent_choices(exclude_id=None):
+    """Возвращает choices для menu_parent_id."""
+    query = MenuItem.query.order_by(MenuItem.position, MenuItem.order)
+    if exclude_id is not None:
+        query = query.filter(MenuItem.id != exclude_id)
+    items = query.all()
+
+    choices = [(0, '— без родителя (корневой) —')]
+    for m in items:
+        depth = _menu_depth(m)
+        indent = '— ' * depth
+        position_label = {
+            'header': 'Верх',
+            'sidebar': 'Бок',
+            'footer': 'Подвал',
+        }.get(m.position, m.position)
+        choices.append((m.id, f'{indent}[{position_label}] {m.title}'))
+    return choices
+
+def _get_menu_parent_choices_rich(exclude_id=None):
+    """
+    Возвращает choices с указанием позиции (для JS-фильтра).
+    Формат: [(value, label, position), ...]
+    """
+    query = MenuItem.query.order_by(MenuItem.position, MenuItem.order)
+    if exclude_id is not None:
+        query = query.filter(MenuItem.id != exclude_id)
+    items = query.all()
+
+    result = [(0, '— без родителя —', '')]
+    for m in items:
+        depth = _menu_depth(m)
+        indent = '— ' * depth
+        position_label = {
+            'header': 'Верх',
+            'sidebar': 'Бок',
+            'footer': 'Подвал',
+        }.get(m.position, m.position)
+        result.append((m.id, f'{indent}[{position_label}] {m.title}', m.position))
+    return result
+
+def _save_page_menu(page, form):
+    """
+    Создаёт/обновляет/удаляет MenuItem для страницы.
+    """
+    existing = page.menu_item
+
+    if form.menu_show.data:
+        menu_title = (form.menu_title.data or '').strip() or page.title
+        parent_id = form.menu_parent_id.data or None
+        if parent_id == 0:
+            parent_id = None
+
+        if existing:
+            existing.title = menu_title
+            existing.url = f'/page/{page.slug}'
+            existing.position = form.menu_position.data or 'header'
+            existing.parent_id = parent_id
+            existing.order = form.menu_order.data or 0
+        else:
+            menu_item = MenuItem(
+                title=menu_title,
+                url=f'/page/{page.slug}',
+                position=form.menu_position.data or 'header',
+                parent_id=parent_id,
+                order=form.menu_order.data or 0,
+                page_id=page.id,
+            )
+            db.session.add(menu_item)
+    else:
+        if existing:
+            for child in existing.children:
+                child.parent_id = existing.parent_id
+            db.session.delete(existing)
+
+def _build_menu_tree(items):
+    """
+    Строит дерево из плоского списка пунктов меню.
+    Возвращает список словарей: [{'item': MenuItem, 'children': [...]}, ...]
+    Только корневые пункты (parent_id=None).
+    """
+    # Группируем детей по parent_id
+    by_parent = {}
+    for m in items:
+        key = m.parent_id
+        by_parent.setdefault(key, []).append(m)
+
+    def build(parent_id):
+        result = []
+        for m in by_parent.get(parent_id, []):
+            result.append({
+                'item': m,
+                'children': build(m.id),
+            })
+        return result
+
+    return build(None)
 
 # === ФАБРИКА ПРИЛОЖЕНИЯ ===
 
@@ -38,6 +164,7 @@ def create_app(config_class=Config):
     """Создаёт и настраивает экземпляр Flask"""
     app = Flask(__name__)
     app.config.from_object(config_class)
+    app.config['TEMPLATES_AUTO_RELOAD'] = True
 
     # Инициализация расширений
     db.init_app(app)
@@ -85,8 +212,25 @@ def create_app(config_class=Config):
             'index.html',
             pagination=pagination,
             articles=pagination.items,
-            header_menu=header_menu,
-            sidebar_menu=sidebar_menu
+        )
+
+    @app.route('/articles')
+    def articles_list():
+        """Публичный список всех опубликованных статей с пагинацией"""
+        page = get_page()
+        per_page = app.config['PUBLIC_ARTICLES_PER_PAGE']
+
+        pagination = (
+            Article.query
+            .filter_by(is_published=True)
+            .order_by(Article.created_at.desc())
+            .paginate(page=page, per_page=per_page, error_out=False)
+        )
+
+        return render_template(
+            'articles_list.html',
+            pagination=pagination,
+            articles=pagination.items,
         )
 
     @app.route('/page/<slug>')
@@ -101,6 +245,28 @@ def create_app(config_class=Config):
         article = Article.query.get_or_404(id)
         return render_template('article.html', article=article)
 
+    """Поиск"""
+    @app.route('/search')
+    def search():
+        """Публичный поиск по статьям, страницам и файлам"""
+        q = request.args.get('q', '').strip()
+
+        if len(q) < 2:
+            return render_template('search.html', q=q, results=None, too_short=True)
+
+        results = search_all(q, limit_each=20)
+
+        # Есть ли хоть что-то
+        has_any = any(results[k] for k in results)
+
+        return render_template(
+            'search.html',
+            q=q,
+            results=results,
+            has_any=has_any,
+            highlight=highlight,
+        )
+
     @app.route('/uploads/<path:filename>')
     def uploaded_file(filename):
         """Публичная отдача файлов из uploads/"""
@@ -110,7 +276,7 @@ def create_app(config_class=Config):
 
     @app.route('/login', methods=['GET', 'POST'])
     def login():
-        """Страница входа в систему"""
+        """Страница входа в систему + приём формы из шапки"""
         if current_user.is_authenticated:
             return redirect(url_for('admin_dashboard'))
 
@@ -122,6 +288,13 @@ def create_app(config_class=Config):
             if user and user.check_password(form.password.data):
                 login_user(user)
                 flash('Вы успешно вошли в систему!', 'success')
+
+                # Если пришли из шапки — возвращаем на ту же страницу
+                referrer = request.referrer
+                if referrer and url_for('login') not in referrer:
+                    return redirect(referrer)
+
+                # Иначе — на следующую или в админку
                 next_page = request.args.get('next')
                 return redirect(next_page or url_for('admin_dashboard'))
 
@@ -131,6 +304,7 @@ def create_app(config_class=Config):
 
     @app.route('/logout')
     @login_required
+    @editor_required
     def logout():
         """Выход из системы"""
         logout_user()
@@ -141,6 +315,7 @@ def create_app(config_class=Config):
 
     @app.route('/admin/')
     @login_required
+    @admin_required
     def admin_dashboard():
         """Главная страница админ-панели"""
         stats = {
@@ -151,30 +326,28 @@ def create_app(config_class=Config):
             'files': UploadedFile.query.count(),
             'albums': Album.query.count(),
         }
-        # Последние альбомы для мини-обзора
         recent_albums = (
             Album.query
             .order_by(Album.created_at.desc())
             .limit(4)
             .all()
         )
-        
-        print(f'[DASHBOARD] recent_albums: {len(recent_albums)} шт.')   # ← отладка
-        
+
+        # Статистика сервера (для первоначального рендера)
+        server_stats = get_system_stats()
+
         return render_template('admin/dashboard.html',
                                stats=stats,
-                               recent_albums=recent_albums)
+                               recent_albums=recent_albums,
+                               server_stats=server_stats)
 
     # --- Управление пользователями ---
 
     @app.route('/admin/users/')
     @login_required
+    @admin_required
     def admin_users():
         """Список пользователей с пагинацией"""
-        if not current_user.is_admin:
-            flash('Доступ запрещён', 'danger')
-            return redirect(url_for('admin_dashboard'))
-
         page = get_page()
         per_page = app.config['USERS_PER_PAGE']
 
@@ -190,14 +363,251 @@ def create_app(config_class=Config):
             users=pagination.items
         )
 
+        # === УПРАВЛЕНИЕ ОБЛАКОМ ===
+
+    @app.route('/admin/cloud/')
+    @login_required
+    @admin_required
+    def admin_cloud_users():
+        """Список всех пользователей с их квотами и занятым местом в облаке."""
+        # Все пользователи
+        users = User.query.order_by(User.username.asc()).all()
+        # Занятое место по каждому (только файлы, без папок)
+        used_rows = (
+            db.session.query(CloudFile.owner_id, db.func.sum(CloudFile.size))
+            .filter(CloudFile.is_folder == False)  # noqa: E712
+            .group_by(CloudFile.owner_id)
+            .all()
+        )
+        used_by_user = {uid: int(total or 0) for uid, total in used_rows}
+
+        # Занятое место в корзине
+        trashed_rows = (
+            db.session.query(CloudFile.owner_id, db.func.sum(CloudFile.size))
+            .filter(
+                CloudFile.is_folder == False,   # noqa: E712
+                CloudFile.is_trashed == True,   # noqa: E712
+            )
+            .group_by(CloudFile.owner_id)
+            .all()
+        )
+        trashed_by_user = {uid: int(total or 0) for uid, total in trashed_rows}
+
+        # Собираем данные для шаблона
+        users_data = []
+        for u in users:
+            used = used_by_user.get(u.id, 0)
+            trashed = trashed_by_user.get(u.id, 0)
+            active = used - trashed
+            quota = u.quota_bytes or 0
+            percent = round(used / quota * 100, 1) if quota > 0 else 0
+
+            users_data.append({
+                'user': u,
+                'used': used,
+                'used_active': active,
+                'trashed': trashed,
+                'quota': quota,
+                'free': max(0, quota - used),
+                'percent': percent,
+            })
+
+        # Сортировка по занятому месту (убывание)
+        users_data.sort(key=lambda x: x['used'], reverse=True)
+
+        return render_template(
+            'admin/cloud_users.html',
+            users_data=users_data,
+        )
+
+    #Детали пользователя — список файлов + форма квоты#
+    @app.route('/admin/cloud/user/<int:user_id>')
+    @login_required
+    @admin_required
+    def admin_cloud_user_detail(user_id):
+        """Детали пользователя: файлы, квота, действия."""
+        user = User.query.get_or_404(user_id)
+
+        # === Файлы пользователя (только корневые, чтобы не показывать вложенные) ===
+        # Полный список с иерархией — через parent_id
+        all_items = (
+            CloudFile.query
+            .filter_by(owner_id=user.id)
+            .order_by(
+                CloudFile.is_trashed.asc(),
+                CloudFile.is_folder.desc(),
+                CloudFile.name.asc(),
+            )
+            .all()
+        )
+
+        # === Статистика ===
+        used = sum(f.size or 0 for f in all_items if not f.is_folder)
+        trashed = sum(
+            (f.size or 0) for f in all_items
+            if not f.is_folder and f.is_trashed
+        )
+        used_active = used - trashed
+        quota = user.quota_bytes or 0
+        free = max(0, quota - used)
+        percent = round(used / quota * 100, 1) if quota > 0 else 0
+
+        # === Ссылки пользователя ===
+        shares = (
+            CloudShare.query
+            .filter_by(created_by_id=user.id)
+            .order_by(CloudShare.created_at.desc())
+            .all()
+        )
+
+        return render_template(
+            'admin/cloud_user.html',
+            user=user,
+            items=all_items,
+            shares=shares,
+            used=used,
+            used_active=used_active,
+            trashed=trashed,
+            quota=quota,
+            free=free,
+            percent=percent,
+        )
+
+    # === СКАЧИВАНИЕ ФАЙЛА ПОЛЬЗОВАТЕЛЯ ===
+
+    @app.route('/admin/cloud/user/<int:user_id>/download/<int:file_id>')
+    @login_required
+    @admin_required
+    def admin_cloud_user_download(user_id, file_id):
+        """Скачивание файла пользователя (только admin)."""
+        from flask import abort, send_file
+
+        # Проверяем, что файл принадлежит пользователю
+        record = CloudFile.query.filter_by(
+            id=file_id,
+            owner_id=user_id,
+            is_folder=False,
+        ).first()
+        if not record:
+            abort(404, description='Файл не найден')
+
+        # Путь к файлу
+        user_dir = os.path.join(
+            current_app.config.get('CLOUD_DATA_DIR') or
+            '/home/admin/apps/mycloud/cloud_data',
+            str(user_id),
+        )
+        file_path = os.path.join(user_dir, record.stored_name)
+
+        # Проверка path traversal
+        abs_file = os.path.abspath(file_path)
+        abs_dir = os.path.abspath(user_dir)
+        if not abs_file.startswith(abs_dir + os.sep):
+            abort(403)
+
+        if not os.path.isfile(file_path):
+            abort(404, description='Файл отсутствует на диске')
+
+        return send_file(
+            file_path,
+            mimetype=record.mime_type or 'application/octet-stream',
+            as_attachment=True,
+            download_name=record.name,
+            conditional=True,
+        )
+
+    # === ИЗМЕНЕНИЕ КВОТЫ ===
+
+    @app.route('/admin/cloud/user/<int:user_id>/quota', methods=['POST'])
+    @login_required
+    @admin_required
+    def admin_cloud_user_quota(user_id):
+        """Изменение квоты пользователя."""
+        user = User.query.get_or_404(user_id)
+
+        # Получаем значение квоты в МБ из формы
+        quota_mb = request.form.get('quota_mb', type=float)
+        if quota_mb is None or quota_mb < 0:
+            flash('Неверное значение квоты', 'danger')
+            return redirect(url_for('admin_cloud_user_detail', user_id=user_id))
+
+        # Переводим МБ в байты
+        quota_bytes = int(quota_mb * 1024 * 1024)
+
+        user.quota_bytes = quota_bytes
+        db.session.commit()
+
+        flash(
+            f'Квота для «{user.username}» установлена: {quota_mb:.0f} МБ',
+            'success'
+        )
+        return redirect(url_for('admin_cloud_user_detail', user_id=user_id))
+
+    # === ОЧИСТКА КОРЗИНЫ ===
+
+    @app.route('/admin/cloud/user/<int:user_id>/trash', methods=['POST'])
+    @login_required
+    @admin_required
+    def admin_cloud_user_trash(user_id):
+        """Полная очистка корзины пользователя."""
+        user = User.query.get_or_404(user_id)
+
+        # Находим все элементы в корзине
+        trashed = CloudFile.query.filter_by(
+            owner_id=user.id,
+            is_trashed=True,
+        ).all()
+
+        if not trashed:
+            flash('Корзина уже пуста', 'info')
+            return redirect(url_for('admin_cloud_user_detail', user_id=user_id))
+
+        user_dir = os.path.join(
+            current_app.config.get('CLOUD_DATA_DIR') or
+            '/home/admin/apps/mycloud/cloud_data',
+            str(user.id),
+        )
+
+        total_size = 0
+        removed_files = 0
+        deleted_ids = [f.id for f in trashed]
+
+        # Удаляем физические файлы
+        for f in trashed:
+            if not f.is_folder and f.stored_name:
+                total_size += f.size or 0
+                path = os.path.join(user_dir, f.stored_name)
+                try:
+                    os.remove(path)
+                    removed_files += 1
+                except FileNotFoundError:
+                    pass
+                except OSError as e:
+                    print(f'[admin-clean-trash] {path}: {e}')
+
+        # Удаляем CloudShare для этих файлов
+        CloudShare.query.filter(CloudShare.file_id.in_(deleted_ids)).delete(
+            synchronize_session=False
+        )
+
+        # Удаляем сами записи
+        for f in trashed:
+            db.session.delete(f)
+
+        db.session.commit()
+
+        flash(
+            f'Корзина «{user.username}» очищена: удалено {removed_files} файлов '
+            f'({human_size(total_size)})',
+            'success'
+        )
+        return redirect(url_for('admin_cloud_user_detail', user_id=user_id))
+
     @app.route('/admin/users/create', methods=['GET', 'POST'])
     @login_required
+    @admin_required
     def admin_user_create():
         """Создание нового пользователя"""
-        if not current_user.is_admin:
-            flash('Доступ запрещён', 'danger')
-            return redirect(url_for('admin_dashboard'))
-
         form = UserForm()
 
         if form.validate_on_submit():
@@ -227,8 +637,9 @@ def create_app(config_class=Config):
 
             user = User(
                 username=form.username.data,
+                full_name=(form.full_name.data or '').strip() or None,
                 email=form.email.data,
-                is_admin=form.is_admin.data
+                role=form.role.data,
             )
             user.set_password(form.password.data)
 
@@ -246,12 +657,9 @@ def create_app(config_class=Config):
 
     @app.route('/admin/users/<int:id>/edit', methods=['GET', 'POST'])
     @login_required
+    @admin_required
     def admin_user_edit(id):
         """Редактирование пользователя"""
-        if not current_user.is_admin:
-            flash('Доступ запрещён', 'danger')
-            return redirect(url_for('admin_dashboard'))
-
         user = User.query.get_or_404(id)
         form = UserForm(obj=user)
 
@@ -283,8 +691,9 @@ def create_app(config_class=Config):
                 )
 
             user.username = form.username.data
+            user.full_name = (form.full_name.data or '').strip() or None
             user.email = form.email.data
-            user.is_admin = form.is_admin.data
+            user.role = form.role.data
 
             if form.password.data:
                 if len(form.password.data) < 6:
@@ -310,12 +719,9 @@ def create_app(config_class=Config):
 
     @app.route('/admin/users/<int:id>/delete', methods=['POST'])
     @login_required
+    @admin_required
     def admin_user_delete(id):
         """Удаление пользователя"""
-        if not current_user.is_admin:
-            flash('Доступ запрещён', 'danger')
-            return redirect(url_for('admin_dashboard'))
-
         user = User.query.get_or_404(id)
 
         if user.id == current_user.id:
@@ -333,13 +739,26 @@ def create_app(config_class=Config):
 
     @app.route('/admin/articles/')
     @login_required
+    @editor_required
     def admin_articles():
-        """Список статей с пагинацией"""
+        """Список статей с пагинацией и поиском"""
         page = get_page()
         per_page = app.config['ARTICLES_PER_PAGE']
+        q = request.args.get('q', '').strip()
+
+        query = Article.query
+        if q:
+            like = f'%{q}%'
+            query = query.filter(
+                db.or_(
+                    Article.title.ilike(like),
+                    Article.summary.ilike(like),
+                    Article.content.ilike(like),
+                )
+            )
 
         pagination = (
-            Article.query
+            query
             .order_by(Article.created_at.desc())
             .paginate(page=page, per_page=per_page, error_out=False)
         )
@@ -347,11 +766,13 @@ def create_app(config_class=Config):
         return render_template(
             'admin/articles.html',
             pagination=pagination,
-            articles=pagination.items
+            articles=pagination.items,
+            q=q,
         )
 
     @app.route('/admin/articles/create', methods=['GET', 'POST'])
     @login_required
+    @editor_required
     def admin_article_create():
         form = ArticleForm()
 
@@ -386,6 +807,7 @@ def create_app(config_class=Config):
 
     @app.route('/admin/articles/<int:id>/edit', methods=['GET', 'POST'])
     @login_required
+    @editor_required
     def admin_article_edit(id):
         """Редактирование существующей статьи"""
         article = Article.query.get_or_404(id)
@@ -420,6 +842,7 @@ def create_app(config_class=Config):
 
     @app.route('/admin/articles/<int:id>/delete', methods=['POST'])
     @login_required
+    @editor_required
     def admin_article_delete(id):
         """Удаление статьи"""
         article = Article.query.get_or_404(id)
@@ -436,24 +859,64 @@ def create_app(config_class=Config):
     @app.route('/admin/pages/')
     @login_required
     def admin_pages():
-        """Список страниц"""
-        pages = Page.query.all()
-        return render_template('admin/pages.html', pages=pages)
+        """Список страниц с поиском"""
+        q = request.args.get('q', '').strip()
+
+        query = Page.query
+        if q:
+            like = f'%{q}%'
+            query = query.filter(
+                db.or_(
+                    Page.title.ilike(like),
+                    Page.content.ilike(like),
+                )
+            )
+
+        pages = query.all()
+        return render_template('admin/pages.html', pages=pages, q=q)
 
     @app.route('/admin/pages/create', methods=['GET', 'POST'])
     @login_required
+    @editor_required
     def admin_page_create():
         """Создание новой страницы"""
         form = PageForm()
+        form.menu_parent_id.choices = _get_menu_parent_choices()
+
+        # При GET — дефолт "без родителя"
+        if request.method == 'GET':
+            form.menu_parent_id.data = 0
+            form.menu_order.data = 0
 
         if form.validate_on_submit():
+            slug = (form.slug.data or '').strip()
+
+            if slug:
+                # Пользователь ввёл slug вручную — проверяем уникальность
+                existing = Page.query.filter_by(slug=slug).first()
+                if existing:
+                    flash('Страница с таким URL уже существует!', 'danger')
+                    return render_template(
+                        'admin/page_form.html',
+                        form=form,
+                        title='Создание страницы',
+                    )
+            else:
+                # Автогенерация
+                slug = slugify(form.title.data, allow_cyrillic=True)
+                slug = unique_slug(Page, slug)
+
             page = Page(
                 title=form.title.data,
-                slug=form.slug.data,
-                content=form.content.data
+                slug=slug,
+                content=form.content.data,
             )
 
             db.session.add(page)
+            db.session.flush()
+
+            _save_page_menu(page, form)
+
             db.session.commit()
 
             flash('Страница создана!', 'success')
@@ -462,32 +925,58 @@ def create_app(config_class=Config):
         return render_template(
             'admin/page_form.html',
             form=form,
-            title='Создание страницы'
+            title='Создание страницы',
+            menu_parent_choices_rich=_get_menu_parent_choices_rich(),
         )
 
     @app.route('/admin/pages/<int:id>/edit', methods=['GET', 'POST'])
     @login_required
+    @editor_required
     def admin_page_edit(id):
         """Редактирование существующей страницы"""
         page = Page.query.get_or_404(id)
         form = PageForm(obj=page)
 
+        exclude_menu_id = page.menu_item.id if page.menu_item else None
+        form.menu_parent_id.choices = _get_menu_parent_choices(exclude_id=exclude_menu_id)
+
+        if request.method == 'GET':
+            if page.menu_item:
+                form.menu_show.data = True
+                form.menu_title.data = page.menu_item.title
+                form.menu_position.data = page.menu_item.position
+                form.menu_parent_id.data = page.menu_item.parent_id or 0
+                form.menu_order.data = page.menu_item.order
+            else:
+                form.menu_parent_id.data = 0
+
         if form.validate_on_submit():
-            existing = Page.query.filter(
-                Page.slug == form.slug.data,
-                Page.id != page.id
-            ).first()
-            if existing:
-                flash('Страница с таким URL уже существует!', 'danger')
-                return render_template(
-                    'admin/page_form.html',
-                    form=form,
-                    title=f'Редактирование: {page.title}'
-                )
+            slug = (form.slug.data or '').strip()
+
+            if slug:
+                # Пользователь ввёл slug вручную — проверяем уникальность
+                existing = Page.query.filter(
+                    Page.slug == slug,
+                    Page.id != page.id,
+                ).first()
+                if existing:
+                    flash('Страница с таким URL уже существует!', 'danger')
+                    return render_template(
+                        'admin/page_form.html',
+                        form=form,
+                        title=f'Редактирование: {page.title}',
+                        page=page,
+                    )
+            else:
+                # Автогенерация
+                slug = slugify(form.title.data, allow_cyrillic=True)
+                slug = unique_slug(Page, slug, exclude_id=page.id)
 
             page.title = form.title.data
-            page.slug = form.slug.data
+            page.slug = slug
             page.content = form.content.data
+
+            _save_page_menu(page, form)
 
             db.session.commit()
             flash(f'Страница «{page.title}» обновлена!', 'success')
@@ -497,7 +986,8 @@ def create_app(config_class=Config):
             'admin/page_form.html',
             form=form,
             title=f'Редактирование: {page.title}',
-            page=page
+            page=page,
+            menu_parent_choices_rich=_get_menu_parent_choices_rich(exclude_id=exclude_menu_id),
         )
 
     @app.route('/admin/pages/<int:id>/delete', methods=['POST'])
@@ -506,6 +996,12 @@ def create_app(config_class=Config):
         """Удаление страницы"""
         page = Page.query.get_or_404(id)
         page_title = page.title
+
+        menu_item = page.menu_item
+        if menu_item:
+            for child in menu_item.children:
+                child.parent_id = menu_item.parent_id
+            db.session.delete(menu_item)
 
         db.session.delete(page)
         db.session.commit()
@@ -623,13 +1119,14 @@ def create_app(config_class=Config):
     @app.route('/admin/files/')
     @login_required
     def admin_files():
-        """Список файлов с пагинацией, сортировкой и фильтром"""
+        """Список файлов с пагинацией, сортировкой, фильтром и поиском (Python-фильтрация)"""
         page = get_page()
         per_page = app.config['FILES_PER_PAGE']
 
         sort_by = request.args.get('sort', 'uploaded_at')
         direction = request.args.get('dir', 'desc')
         type_filter = request.args.get('type', 'all')
+        q = request.args.get('q', '').strip()
 
         allowed_sort = {'original_name', 'file_type', 'size', 'uploaded_at'}
         if sort_by not in allowed_sort:
@@ -637,73 +1134,169 @@ def create_app(config_class=Config):
         if direction not in ('asc', 'desc'):
             direction = 'desc'
 
-        query = UploadedFile.query
-        if type_filter != 'all':
-            query = query.filter(UploadedFile.file_type == type_filter)
+        # 1. Забираем ВСЕ файлы (их немного — можно все)
+        all_files = UploadedFile.query.all()
 
-        column = getattr(UploadedFile, sort_by)
-        query = query.order_by(
-            column.desc() if direction == 'desc' else column.asc()
-        )
+        # 2. Фильтр по поиску (Python, регистронезависимо для кириллицы)
+        if q:
+            q_lower = q.lower()
+            all_files = [
+                f for f in all_files
+                if q_lower in (f.original_name or '').lower()
+                or q_lower in (f.description or '').lower()
+            ]
 
-        pagination = query.paginate(
-            page=page, per_page=per_page, error_out=False
-        )
-
-        type_counts = {'all': UploadedFile.query.count()}
+        # 3. Счётчики по типам (уже с учётом поиска)
+        type_counts = {'all': len(all_files)}
         for t in ['image', 'video', 'audio', 'document', 'archive', 'other']:
-            type_counts[t] = UploadedFile.query.filter_by(file_type=t).count()
+            type_counts[t] = sum(1 for f in all_files if f.file_type == t)
 
-        total_size = (
-            db.session.query(db.func.sum(UploadedFile.size)).scalar() or 0
-        )
+        # 4. Общий размер (с учётом поиска)
+        total_size = sum(f.size or 0 for f in all_files)
+
+        # 5. Фильтр по типу
+        if type_filter != 'all':
+            all_files = [f for f in all_files if f.file_type == type_filter]
+
+        # 6. Сортировка
+        reverse = (direction == 'desc')
+        if sort_by == 'original_name':
+            all_files.sort(key=lambda f: (f.original_name or '').lower(), reverse=reverse)
+        elif sort_by == 'file_type':
+            all_files.sort(key=lambda f: f.file_type or '', reverse=reverse)
+        elif sort_by == 'size':
+            all_files.sort(key=lambda f: f.size or 0, reverse=reverse)
+        else:  # uploaded_at
+            all_files.sort(
+                key=lambda f: f.uploaded_at or datetime.min,
+                reverse=reverse
+            )
+
+        # 7. Пагинация вручную
+        total = len(all_files)
+        start = (page - 1) * per_page
+        end = start + per_page
+        page_files = all_files[start:end]
+
+        # 8. Мини-обёртка для пагинации (для совместимости с шаблоном)
+        class SimplePagination:
+            def __init__(self, items, page, per_page, total):
+                self.items = items
+                self.page = page
+                self.per_page = per_page
+                self.total = total
+                self.pages = max(1, (total + per_page - 1) // per_page)
+                self.has_prev = page > 1
+                self.has_next = page < self.pages
+                self.prev_num = page - 1 if self.has_prev else None
+                self.next_num = page + 1 if self.has_next else None
+
+            def iter_pages(self, left_edge=2, left_current=2,
+                           right_current=2, right_edge=2):
+                last = 0
+                for num in range(1, self.pages + 1):
+                    if (num <= left_edge
+                            or (self.page - left_current - 1 < num
+                                < self.page + right_current)
+                            or num > self.pages - right_edge):
+                        if last + 1 != num:
+                            yield None
+                        yield num
+                        last = num
+
+        pagination = SimplePagination(page_files, page, per_page, total)
 
         return render_template(
             'admin/files.html',
             pagination=pagination,
-            files=pagination.items,
+            files=page_files,
             sort_by=sort_by,
             direction=direction,
             type_filter=type_filter,
             type_counts=type_counts,
-            total_size=total_size
+            total_size=total_size,
+            q=q,
         )
-
     @app.route('/admin/files/upload', methods=['POST'])
     @login_required
     def admin_file_upload():
-        """Загрузка файла через обычную форму"""
-        form = UploadFileForm()
+        """Массовая загрузка файлов из формы"""
+        # getlist вернёт список всех файлов из поля name="files"
+        files = request.files.getlist('files')
 
-        if form.validate_on_submit():
-            file = form.file.data
+        # Обратная совместимость: если пришёл один файл под именем 'file'
+        if not files:
+            single = request.files.get('file')
+            if single:
+                files = [single]
+
+        # Отбрасываем пустые поля
+        files = [f for f in files if f and f.filename]
+
+        if not files:
+            flash('Файлы не выбраны.', 'warning')
+            return redirect(url_for('admin_files'))
+
+        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+        uploaded = 0
+        skipped = 0
+        total_size = 0
+
+        for file in files:
             original_name = file.filename
             ext = os.path.splitext(original_name)[1].lstrip('.').lower()
 
             stored_name = make_stored_name(original_name)
-            os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
             save_path = os.path.join(app.config['UPLOAD_FOLDER'], stored_name)
-            file.save(save_path)
-            size = os.path.getsize(save_path)
 
-            record = UploadedFile(
-                original_name=original_name,
-                stored_name=stored_name,
-                mime_type=guess_mime(original_name),
-                file_type=get_file_type(ext),
-                size=size,
-                extension=ext,
-                uploaded_by_id=current_user.id,
-                description=form.description.data or None
+            try:
+                # 1. Сохраняем файл
+                file.save(save_path)
+                size = os.path.getsize(save_path)
+
+                # 2. Миниатюра для изображений
+                thumb_name = None
+                if can_thumbnail(original_name):
+                    thumb_name = thumbnail_name_for(stored_name)
+                    thumb_path = os.path.join(app.config['UPLOAD_FOLDER'], thumb_name)
+                    if not create_thumbnail(save_path, thumb_path):
+                        thumb_name = None
+
+                # 3. Запись в БД
+                record = UploadedFile(
+                    original_name=original_name,
+                    stored_name=stored_name,
+                    mime_type=guess_mime(original_name),
+                    file_type=get_file_type(ext),
+                    size=size,
+                    extension=ext,
+                    uploaded_by_id=current_user.id,
+                    thumbnail_name=thumb_name,
+                )
+                db.session.add(record)
+                db.session.commit()
+
+                uploaded += 1
+                total_size += size
+
+            except Exception as e:
+                # Если что-то не так с одним файлом — пропускаем, но не рвём всю загрузку
+                print(f'[upload] Ошибка с файлом {original_name}: {e}')
+                skipped += 1
+                # Откатываем незакоммиченные изменения для этого файла
+                db.session.rollback()
+                continue
+
+        # Сообщения пользователю
+        if uploaded:
+            flash(
+                f'Загружено файлов: {uploaded} '
+                f'(объём: {human_size(total_size)}).',
+                'success'
             )
-            db.session.add(record)
-            db.session.commit()
-
-            flash(f'Файл «{original_name}» загружен.', 'success')
-        else:
-            for errors in form.errors.values():
-                for err in errors:
-                    flash(err, 'danger')
+        if skipped:
+            flash(f'Не удалось сохранить файлов: {skipped}.', 'warning')
 
         return redirect(url_for('admin_files'))
 
@@ -822,9 +1415,7 @@ def create_app(config_class=Config):
 
         return render_template('gallery/index.html',
                                pagination=pagination,
-                               albums=pagination.items,
-                               header_menu=header_menu,
-                               sidebar_menu=sidebar_menu)
+                               albums=pagination.items)
 
     @app.route('/gallery/<slug>')
     def gallery_album(slug):
@@ -840,9 +1431,7 @@ def create_app(config_class=Config):
 
         return render_template('gallery/album.html',
                                album=album,
-                               photos=photos,
-                               header_menu=header_menu,
-                               sidebar_menu=sidebar_menu)
+                               photos=photos)
 
     # --- Управление альбомами ---
 
@@ -865,20 +1454,32 @@ def create_app(config_class=Config):
 
     @app.route('/admin/albums/create', methods=['GET', 'POST'])
     @login_required
+    @editor_required
     def admin_album_create():
         """Создание альбома"""
         form = AlbumForm()
 
         if form.validate_on_submit():
-            # Проверка уникальности slug
-            if Album.query.filter_by(slug=form.slug.data).first():
-                flash('Альбом с таким slug уже существует!', 'danger')
-                return render_template('admin/album_form.html',
-                                       form=form, title='Создание альбома')
+            slug = (form.slug.data or '').strip()
+
+            if slug:
+                # Пользователь ввёл slug вручную — проверяем уникальность
+                existing = Album.query.filter_by(slug=slug).first()
+                if existing:
+                    flash('Альбом с таким URL уже существует!', 'danger')
+                    return render_template(
+                        'admin/album_form.html',
+                        form=form,
+                        title='Создание альбома',
+                    )
+            else:
+                # Автогенерация
+                slug = slugify(form.title.data, allow_cyrillic=True)
+                slug = unique_slug(Album, slug)
 
             album = Album(
                 title=form.title.data,
-                slug=form.slug.data,
+                slug=slug,
                 description=form.description.data,
                 is_published=form.is_published.data,
                 order=form.order.data or 0,
@@ -894,6 +1495,7 @@ def create_app(config_class=Config):
 
     @app.route('/admin/albums/<int:id>/edit', methods=['GET', 'POST'])
     @login_required
+    @editor_required
     def admin_album_edit(id):
         """Редактирование альбома + управление фотографиями"""
         album = Album.query.get_or_404(id)
@@ -917,19 +1519,29 @@ def create_app(config_class=Config):
                         flash(e, 'danger')
                 return redirect(url_for('admin_album_edit', id=album.id))
 
-            existing = Album.query.filter(
-                Album.slug == form.slug.data, Album.id != album.id
-            ).first()
-            if existing:
-                flash('Альбом с таким slug уже существует!', 'danger')
+            slug = (form.slug.data or '').strip()
+
+            if slug:
+                # Пользователь ввёл slug вручную — проверяем уникальность
+                existing = Album.query.filter(
+                    Album.slug == slug,
+                    Album.id != album.id,
+                ).first()
+                if existing:
+                    flash('Альбом с таким URL уже существует!', 'danger')
+                    return redirect(url_for('admin_album_edit', id=album.id))
             else:
-                album.title = form.title.data
-                album.slug = form.slug.data
-                album.description = form.description.data
-                album.is_published = form.is_published.data
-                album.order = form.order.data or 0
-                db.session.commit()
-                flash('Альбом обновлён.', 'success')
+                # Автогенерация
+                slug = slugify(form.title.data, allow_cyrillic=True)
+                slug = unique_slug(Album, slug, exclude_id=album.id)
+
+            album.title = form.title.data
+            album.slug = slug
+            album.description = form.description.data
+            album.is_published = form.is_published.data
+            album.order = form.order.data or 0
+            db.session.commit()
+            flash('Альбом обновлён.', 'success')
             return redirect(url_for('admin_album_edit', id=album.id))
 
         # === ВЕТКА 2: добавление фотографий ===
@@ -1027,6 +1639,31 @@ def create_app(config_class=Config):
         db.session.commit()
         return jsonify({'ok': True})
 
+    @app.route('/admin/albums/<int:album_id>/photos/<int:photo_id>/featured', methods=['POST'])
+    @login_required
+    def admin_album_toggle_featured(album_id, photo_id):
+        """Переключает флаг «избранное» у фотографии"""
+        photo = Photo.query.filter_by(id=photo_id, album_id=album_id).first_or_404()
+
+        # Проверяем лимит при добавлении
+        if not photo.is_featured:
+            featured_count = Photo.query.filter_by(is_featured=True).count()
+            if featured_count >= 10:
+                flash('Достигнут лимит избранных фото (10). '
+                      'Уберите одну из закладок в других альбомах.', 'warning')
+                return redirect(url_for('admin_album_edit', id=album_id))
+
+        # Переключаем
+        photo.is_featured = not photo.is_featured
+        db.session.commit()
+
+        if photo.is_featured:
+            flash(f'Фото добавлено в избранное для слайдера.', 'success')
+        else:
+            flash(f'Фото убрано из избранного.', 'info')
+
+        return redirect(url_for('admin_album_edit', id=album_id))
+
     # --- API для редактора (TinyMCE) ---
 
     @app.route('/admin/api/files')
@@ -1041,18 +1678,22 @@ def create_app(config_class=Config):
 
         files = query.order_by(UploadedFile.uploaded_at.desc()).all()
 
-        data = [
-            {
+        data = []
+        for f in files:
+            # Миниатюра: если есть thumbnail_name — используем, иначе оригинал
+            thumb_name = f.thumbnail_name or f.stored_name
+            thumbnail_url = url_for('uploaded_file', filename=thumb_name)
+
+            data.append({
                 'id': f.id,
                 'name': f.original_name,
                 'url': url_for('admin_file_download', id=f.id),
                 'public_url': url_for('uploaded_file', filename=f.stored_name),
+                'thumbnail_url': thumbnail_url,                  # ← НОВОЕ
                 'type': f.file_type,
                 'size': f.size_human(),
                 'date': f.uploaded_at.strftime('%d.%m.%Y %H:%M'),
-            }
-            for f in files
-        ]
+            })
 
         return jsonify(data)
 
@@ -1097,6 +1738,384 @@ def create_app(config_class=Config):
             'size': record.size_human(),
         })
 
+    @app.route('/admin/api/upload-multiple', methods=['POST'])
+    @login_required
+    def admin_api_upload_multiple():
+        """AJAX-загрузка нескольких файлов (из редактора)"""
+        files = request.files.getlist('files')
+        files = [f for f in files if f and f.filename]
+
+        if not files:
+            return jsonify({'error': 'Файлы не переданы'}), 400
+
+        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+        results = []
+        for file in files:
+            original_name = file.filename
+            ext = os.path.splitext(original_name)[1].lstrip('.').lower()
+            stored_name = make_stored_name(original_name)
+            save_path = os.path.join(app.config['UPLOAD_FOLDER'], stored_name)
+
+            file.save(save_path)
+            size = os.path.getsize(save_path)
+
+            record = UploadedFile(
+                original_name=original_name,
+                stored_name=stored_name,
+                mime_type=guess_mime(original_name),
+                file_type=get_file_type(ext),
+                size=size,
+                extension=ext,
+                uploaded_by_id=current_user.id,
+            )
+            db.session.add(record)
+            db.session.flush()  # получаем record.id до commit
+
+            results.append({
+                'id': record.id,
+                'name': record.original_name,
+                'url': url_for('admin_file_download', id=record.id),
+                'public_url': url_for('uploaded_file', filename=record.stored_name),
+                'type': record.file_type,
+                'size': record.size_human(),
+            })
+
+        db.session.commit()
+
+        return jsonify({'uploaded': results})
+
+     # === API СТАТИСТИКИ СИСТЕМЫ ===
+
+    @app.route('/admin/api/system-stats')
+    @login_required
+    def admin_api_system_stats():
+        """JSON с текущими метриками сервера"""
+        return jsonify(get_system_stats())
+
+        # === НАСТРОЙКИ САЙТА ===
+
+
+    @app.route('/admin/settings/sync', methods=['POST'])
+    @login_required
+    @admin_required
+    def admin_settings_sync():
+        """Принудительная синхронизация буферов диска"""
+        external_path = app.config['EXTERNAL_BACKUP_PATH']
+        ok = sync_buffers()
+        if ok:
+            flash('Буферы синхронизированы с диском.', 'success')
+        else:
+            flash('Не удалось синхронизировать буферы.', 'warning')
+
+        return redirect(url_for('admin_settings'))
+
+    @app.route('/admin/settings/backup', methods=['POST'])
+    @login_required
+    @admin_required
+    def admin_settings_backup():
+        """Запуск полного бэкапа на внешний диск"""
+        external_path = app.config['EXTERNAL_BACKUP_PATH']
+        project_dir = app.config['BASE_DIR']
+
+        # Запускаем бэкап
+        result = create_full_backup(
+            project_dir=project_dir,
+            dest_root=external_path,
+            subdir=app.config['EXTERNAL_BACKUP_SUBDIR'],
+            keep_count=app.config['EXTERNAL_BACKUP_KEEP'],
+        )
+
+        if result['ok']:
+            flash(
+                f"Бэкап создан: {result['archive_name']} "
+                f"({result['size_mb']} МБ)",
+                'success'
+            )
+        else:
+            flash(f"Ошибка бэкапа: {result['error']}", 'danger')
+
+        return redirect(url_for('admin_settings'))
+
+    @app.route('/admin/api/disk-status')
+    @login_required
+    def admin_api_disk_status():
+        """JSON со статусом внешнего диска — для обновления в реальном времени"""
+        external_path = app.config['EXTERNAL_BACKUP_PATH']
+        mounted = is_mounted(external_path)
+        info = get_disk_info(external_path) if mounted else None
+        return jsonify({
+            'path': external_path,
+            'mounted': mounted,
+            'disk': info,
+        })
+
+    @app.route('/admin/settings/mount', methods=['POST'])
+    @login_required
+    @admin_required
+    def admin_settings_mount():
+        """Монтирование внешнего диска"""
+        external_path = app.config['EXTERNAL_BACKUP_PATH']
+        result = mount_disk(external_path)
+
+        if result['ok']:
+            flash(result.get('message', 'Диск смонтирован.'), 'success')
+        else:
+            flash(f"Ошибка монтирования: {result['error']}", 'danger')
+
+        return redirect(url_for('admin_settings'))
+
+    @app.route('/admin/settings/unmount', methods=['POST'])
+    @login_required
+    @admin_required
+    def admin_settings_unmount():
+        """Безопасное отмонтирование внешнего диска"""
+        external_path = app.config['EXTERNAL_BACKUP_PATH']
+        result = unmount_disk(external_path)
+
+        if result['ok']:
+            flash(
+                result.get('message', 'Диск отмонтирован. Можно безопасно извлечь.'),
+                'success'
+            )
+        else:
+            flash(f"Ошибка отмонтирования: {result['error']}", 'danger')
+
+        return redirect(url_for('admin_settings'))
+
+       #делает настройки доступными во всех шаблонах без явной передачи
+    @app.context_processor
+    def inject_site_settings():
+        """Передаёт настройки сайта во все шаблоны"""
+        try:
+            return {'site_settings': SiteSettings.get()}
+        except Exception:
+            # Если таблица ещё не создана — вернём пустую заглушку
+            return {'site_settings': None}
+
+    def list_themes():
+        """Возвращает список папок тем из static/themes/"""
+        themes_dir = os.path.join(app.static_folder, 'themes')
+        if not os.path.isdir(themes_dir):
+            return ['default']
+        themes = sorted([
+            name for name in os.listdir(themes_dir)
+            if os.path.isdir(os.path.join(themes_dir, name))
+        ])
+        return themes or ['default']
+
+    @app.context_processor
+    def inject_recent_articles():
+        """Передаёт последние 5 опубликованных статей во все шаблоны."""
+        try:
+            articles = (
+                Article.query
+                .filter_by(is_published=True)
+                .order_by(Article.created_at.desc())
+                .limit(5)
+                .all()
+            )
+            return {'recent_articles': articles}
+        except Exception as e:
+            app.logger.warning(f'inject_recent_articles: {e}')
+            return {'recent_articles': []}
+
+        #маршрут редактирования настроек:
+    @app.route('/admin/settings/', methods=['GET', 'POST'])
+    @login_required
+    @admin_required
+    def admin_settings():
+        """Страница настроек сайта: резервное копирование + общие настройки"""
+        # === Резервное копирование ===
+        external_path = app.config['EXTERNAL_BACKUP_PATH']
+        mounted = is_mounted(external_path)
+        disk_info = get_disk_info(external_path) if mounted else None
+        backups = list_backups(external_path, app.config['EXTERNAL_BACKUP_SUBDIR']) if mounted else []
+
+        # === Общие настройки ===
+        settings = SiteSettings.get()
+        form = SiteSettingsForm(obj=settings)
+
+        # Заполняем выпадающие списки
+        themes = list_themes()
+        form.active_theme.choices = [(t, t) for t in themes]
+
+        image_files = UploadedFile.query.filter_by(file_type='image')\
+            .order_by(UploadedFile.uploaded_at.desc()).all()
+        form.logo_file_id.choices = [(0, '— без логотипа —')] + \
+                                    [(f.id, f.original_name) for f in image_files]
+        form.favicon_file_id.choices = [(0, '— без favicon —')] + \
+                                       [(f.id, f.original_name) for f in image_files]
+
+        # Обработка POST — сохранение настроек
+        if form.validate_on_submit():
+            settings.site_title = form.site_title.data
+            settings.site_subtitle = form.site_subtitle.data or ''
+            settings.site_description = form.site_description.data or ''
+            settings.site_keywords = form.site_keywords.data or ''
+            settings.site_base_url = form.site_base_url.data or 'http://192.168.2.18'
+            settings.cloud_base_url = form.cloud_base_url.data or 'http://192.168.2.18:5001'
+            settings.mail_base_url = form.mail_base_url.data or 'http://192.168.2.18:5002'
+            settings.show_header = form.show_header.data
+            settings.show_header_menu = form.show_header_menu.data
+            settings.show_sidebar = form.show_sidebar.data
+            settings.slider_delay_seconds = form.slider_delay_seconds.data or 5
+            settings.show_footer = form.show_footer.data
+            settings.show_slider = form.show_slider.data
+            settings.active_theme = form.active_theme.data or 'default'
+            settings.logo_file_id = form.logo_file_id.data or None
+            settings.favicon_file_id = form.favicon_file_id.data or None
+
+            db.session.commit()
+            flash('Настройки сохранены.', 'success')
+            return redirect(url_for('admin_settings'))
+
+        # Для GET-запроса — подставляем текущие значения
+        if request.method == 'GET':
+            form.logo_file_id.data = settings.logo_file_id or 0
+            form.favicon_file_id.data = settings.favicon_file_id or 0
+
+        return render_template('admin/settings.html',
+                               external_path=external_path,
+                               mounted=mounted,
+                               disk_info=disk_info,
+                               backups=backups,
+                               form=form,
+                               settings=settings)
+
+    def get_slider_photos(limit=10):
+        """Возвращает список Photo с is_featured=True (свежие вперёд)"""
+        try:
+            return (
+                Photo.query
+                .filter_by(is_featured=True)
+                .order_by(Photo.added_at.desc())
+                .limit(limit)
+                .all()
+            )
+        except Exception as e:
+            app.logger.warning(f'get_slider_photos: {e}')
+            return []
+
+    @app.context_processor
+    def inject_slider_photos():
+        """Делает slider_photos доступными во всех шаблонах"""
+        try:
+            settings = SiteSettings.get()
+            photos = get_slider_photos(10) if settings.show_slider else []
+            return {'slider_photos': photos}
+        except Exception as e:
+            app.logger.warning(f'inject_slider_photos: {e}')
+            return {'slider_photos': []}   
+
+
+    @app.route('/admin/albums/reorder', methods=['POST'])
+    @login_required
+    @editor_required
+    def admin_albums_reorder():
+        """Сохранение нового порядка альбомов (JSON)"""
+        data = request.get_json(silent=True) or {}
+        order_list = data.get('order', [])
+
+        if not isinstance(order_list, list):
+            return jsonify({'ok': False, 'error': 'Неверный формат'}), 400
+
+        for idx, album_id in enumerate(order_list):
+            album = Album.query.get(album_id)
+            if album:
+                album.order = idx
+
+        db.session.commit()
+        return jsonify({'ok': True, 'count': len(order_list)})  
+
+    @app.context_processor
+    def inject_menus():
+        """Передаёт меню во все шаблоны автоматически."""
+        try:
+            header_all = (
+                MenuItem.query
+                .filter_by(position='header')
+                .order_by(MenuItem.order)
+                .all()
+            )
+            sidebar_all = (
+                MenuItem.query
+                .filter_by(position='sidebar')
+                .order_by(MenuItem.order)
+                .all()
+            )
+
+            # Дерево для верхнего меню
+            header_menu_tree = _build_menu_tree(header_all)
+            print(f'[DEBUG] header_menu_tree type: {type(header_menu_tree).__name__}, len: {len(header_menu_tree)}')
+            if header_menu_tree:
+                print(f'[DEBUG] first node type: {type(header_menu_tree[0]).__name__}')
+            sidebar_menu_tree = _build_menu_tree(sidebar_all)
+
+            return {
+                'header_menu': header_menu_tree,
+                'sidebar_menu': sidebar_menu_tree,
+            }
+        except Exception as e:
+            app.logger.warning(f'inject_menus: {e}')
+            return {'header_menu': [], 'sidebar_menu': []}
+
+    @app.context_processor
+    def inject_now():
+        """Передаёт текущий год в шаблоны"""
+        from datetime import datetime
+        return {'now': datetime.now}
+
+    @app.route('/admin/settings/restart', methods=['POST'])
+    @login_required
+    @admin_required
+    def admin_settings_restart():
+        """Перезапуск сервиса myframework через systemd"""
+        import subprocess
+        import threading
+        import time
+
+        def delayed_restart():
+            time.sleep(1)
+            try:
+                result = subprocess.run(
+                    ['/usr/bin/sudo', '-n',
+                     '/usr/bin/systemctl', 'restart', 'myframework'],
+                    capture_output=True,        # ← добавить
+                    timeout=30,
+                    text=True
+                )
+                # ← добавить: печатаем всё в stdout gunicorn
+                print(f'[restart] rc={result.returncode}')
+                print(f'[restart] stdout={result.stdout!r}')
+                print(f'[restart] stderr={result.stderr!r}')
+            except Exception as e:
+                print(f'[restart] Ошибка перезапуска: {e}')
+
+        thread = threading.Thread(target=delayed_restart, daemon=True)
+        thread.start()
+
+        return jsonify({'ok': True, 'message': 'Перезапуск запущен'})
+
+    @app.route('/admin/api/service-status')
+    @login_required
+    def admin_api_service_status():
+        """Возвращает статус сервиса myframework"""
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                ['/usr/bin/sudo', '-n',
+                 '/usr/bin/systemctl', 'is-active', 'myframework'],
+                capture_output=True,
+                timeout=5,
+                text=True
+            )
+            active = result.stdout.strip() == 'active'
+            return jsonify({'active': active, 'status': result.stdout.strip()})
+        except Exception as e:
+            return jsonify({'active': False, 'error': str(e)}), 200
+    
     return app
 
 
@@ -1112,14 +2131,14 @@ if __name__ == '__main__':
         os.makedirs(app.config['ARCHIVE_FOLDER'], exist_ok=True)
 
         if User.query.count() == 0:
-            admin = User(
-                username='admin',
-                email='admin@example.com',
-                is_admin=True
-            )
-            admin.set_password('admin123')
-            db.session.add(admin)
-            db.session.commit()
-            print('Создан администратор: admin / admin123')
+         admin = User(
+            username='admin',
+            email='admin@example.com',
+            role='admin',
+        )
+        admin.set_password('admin123')
+        db.session.add(admin)
+        db.session.commit()
+        print('Создан администратор: admin / admin123')
 
     app.run(debug=True, host='0.0.0.0', port=5000)

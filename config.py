@@ -1,5 +1,9 @@
 # config.py - Конфигурация приложения
-import os  # Импорт модуля для работы с переменными окружения
+import os
+from dotenv import load_dotenv
+
+# Загружаем переменные окружения из .env ДО чтения Config
+load_dotenv()
 
 class Config:
     """Базовый класс конфигурации"""
@@ -32,6 +36,15 @@ class Config:
 
     # Разрешённые расширения (пустой список = разрешить все)
     ALLOWED_EXTENSIONS = set()
+
+    # === Внешний накопитель для бэкапов ===
+    EXTERNAL_BACKUP_PATH = os.environ.get('EXTERNAL_BACKUP_PATH') or '/mnt/backup'
+
+    # Сколько последних архивов хранить на внешнем диске
+    EXTERNAL_BACKUP_KEEP = 10
+
+    # Название папки для бэкапов на внешнем диске
+    EXTERNAL_BACKUP_SUBDIR = 'myframework'
     
     # === Пагинация ===
     ARTICLES_PER_PAGE = 10      # статей в админке на странице

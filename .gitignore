@@ -24,3 +24,23 @@ archives/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Секреты
+.env
+.env.local
+.env.*.local
+
+# Бэкапы БД
+*.bak
+*.bak2
+*.backup
+site.db.*
+*.sqlite3-journal
+
+# Рабочие файлы
+comands.txt
+*.txt.bak
+
+# Кэш IDE
+.cache/
+.pytest_cache/

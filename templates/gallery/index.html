@@ -1,63 +1,70 @@
 {% extends 'base.html' %}
 {% from '_pagination.html' import render_pagination with context %}
 
-{% block title %}Фотогалерея{% endblock %}
+{% block title %}Фотогалерея — {{ site_settings.site_title if site_settings else 'Мой Сайт' }}{% endblock %}
 
 {% block content %}
-<h2 class="mb-4">Фотогалерея</h2>
+
+<nav aria-label="breadcrumb" class="article-breadcrumb">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item">
+            <a href="{{ url_for('index') }}"><i class="bi bi-house"></i> Главная</a>
+        </li>
+        <li class="breadcrumb-item active">Фотогалерея</li>
+    </ol>
+</nav>
+
+<div class="gallery-header">
+    <h1 class="gallery-title"><i class="bi bi-images"></i> Фотогалерея</h1>
+    {% if albums %}
+    <span class="gallery-count">{{ pagination.total }} альбомов</span>
+    {% endif %}
+</div>
 
 {% if albums %}
-    <div class="row g-3">
-        {% for album in albums %}
-            <div class="col-6 col-md-4 col-lg-3">
-                <div class="card h-100 album-card">
-                    <a href="{{ url_for('gallery_album', slug=album.slug) }}"
-                       class="text-decoration-none">
-                        {# Обложка альбома — cover_photo или первый фото #}
-                        {% set cover = album.cover_photo or (album.photos[0] if album.photos else None) %}
-                        {% if cover %}
-                            <img src="{{ url_for('uploaded_file', filename=cover.file.stored_name) }}"
-                                 class="card-img-top album-cover"
-                                 alt="{{ album.title }}">
-                        {% else %}
-                            <div class="album-cover album-cover-empty d-flex align-items-center justify-content-center bg-light">
-                                <i class="bi bi-images fs-1 text-muted"></i>
-                            </div>
-                        {% endif %}
-                    </a>
-                    <div class="card-body">
-                        <h6 class="card-title mb-1">
-                            <a href="{{ url_for('gallery_album', slug=album.slug) }}"
-                               class="text-decoration-none">
-                                {{ album.title }}
-                            </a>
-                        </h6>
-                        <small class="text-muted">
-                            {{ album.photos|length }} фото
-                        </small>
-                    </div>
+<div class="row g-4">
+    {% for album in albums %}
+    {% set cover = album.cover_photo or (album.photos[0] if album.photos else None) %}
+    <div class="col-12 col-sm-6 col-md-4 col-lg-3">
+        <a href="{{ url_for('gallery_album', slug=album.slug) }}" class="album-card">
+            <div class="album-card-cover">
+                {% if cover and cover.file %}
+                {% set thumb = cover.file.thumbnail_name or cover.file.stored_name %}
+                <img src="{{ url_for('uploaded_file', filename=thumb) }}" alt="{{ album.title }}" loading="lazy"
+                    decoding="async">
+                {% else %}
+                <div class="album-card-cover-empty">
+                    <i class="bi bi-images"></i>
                 </div>
-            </div>
-        {% endfor %}
-    </div>
+                {% endif %}
 
-    {{ render_pagination(pagination, 'gallery_index') }}
-{% else %}
-    <div class="alert alert-info text-center py-4">
-        <i class="bi bi-images fs-1 d-block mb-2"></i>
-        Альбомов пока нет.
+                {# Бейдж с количеством фото #}
+                <span class="album-card-badge">
+                    <i class="bi bi-camera"></i> {{ album.photos|length }}
+                </span>
+            </div>
+
+            <div class="album-card-body">
+                <h5 class="album-card-title">{{ album.title }}</h5>
+                {% if album.description %}
+                <p class="album-card-description">{{ album.description }}</p>
+                {% endif %}
+                <span class="album-card-readmore">
+                    Смотреть <i class="bi bi-arrow-right"></i>
+                </span>
+            </div>
+        </a>
     </div>
+    {% endfor %}
+</div>
+
+{{ render_pagination(pagination, 'gallery_index') }}
+{% else %}
+<div class="gallery-empty">
+    <i class="bi bi-images"></i>
+    <h4>Альбомов пока нет</h4>
+    <p class="text-muted">Заглядывайте позже — мы скоро добавим фотографии.</p>
+</div>
 {% endif %}
 
-<style>
-.album-cover {
-    aspect-ratio: 4 / 3;
-    object-fit: cover;
-    width: 100%;
-    display: block;
-}
-.album-cover-empty { aspect-ratio: 4 / 3; }
-.album-card { transition: transform .15s; }
-.album-card:hover { transform: translateY(-3px); }
-</style>
 {% endblock %}

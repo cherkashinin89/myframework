@@ -3,6 +3,58 @@
 {% block title %}Управление меню{% endblock %}
 
 {% block content %}
+
+{# === Макрос: рендер одного пункта меню === #}
+{% macro render_menu_item(item, all_items, depth=0) %}
+<li class="list-group-item" style="padding-left: {{ 12 + depth * 24 }}px;">
+    <!-- Первая строка: название + порядок -->
+    <div class="d-flex justify-content-between align-items-start">
+        <div class="me-2">
+            {% if depth > 0 %}
+                <i class="bi bi-arrow-return-right text-muted"></i>
+            {% endif %}
+            <strong>{{ item.title }}</strong>
+            <div>
+                <small class="text-muted">
+                    <code>{{ item.url }}</code>
+                </small>
+            </div>
+        </div>
+        <span class="badge bg-light text-dark flex-shrink-0">
+            #{{ item.order }}
+        </span>
+    </div>
+
+    <!-- Вторая строка: кнопки действий -->
+    <div class="mt-2 d-flex gap-1">
+        <a href="{{ url_for('admin_menu_edit', id=item.id) }}"
+           class="btn btn-sm btn-outline-primary flex-fill">
+            <i class="bi bi-pencil"></i>
+        </a>
+        <form method="POST"
+              action="{{ url_for('admin_menu_delete', id=item.id) }}"
+              class="flex-fill"
+              onsubmit="return confirm('Удалить пункт «{{ item.title }}»?{% if item.children.count() %} Дочерние пункты перестанут быть вложенными.{% endif %}');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-sm btn-outline-danger w-100">
+                <i class="bi bi-trash"></i>
+            </button>
+        </form>
+    </div>
+
+    {# === Дочерние пункты (рекурсивно) === #}
+    {% set children = all_items | selectattr('parent_id', 'equalto', item.id) | list %}
+    {% if children %}
+    <ul class="list-group list-group-flush mt-2" style="margin: 0 -12px -12px;">
+        {% for child in children %}
+            {{ render_menu_item(child, all_items, depth + 1) }}
+        {% endfor %}
+    </ul>
+    {% endif %}
+</li>
+{% endmacro %}
+
+
 <!-- Заголовок и кнопка создания -->
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2 class="mb-0">Управление меню</h2>
@@ -27,57 +79,25 @@
                             <i class="bi {{ pos_icon }}"></i> {{ pos_label }}
                         </span>
                         <span class="badge bg-light text-dark">
-                            {{ menu_items|selectattr('position', 'equalto', pos_key)|list|length }}
+                            {{ menu_items | selectattr('position', 'equalto', pos_key) | list | length }}
                         </span>
                     </div>
 
-                    {% set pos_items = menu_items|selectattr('position', 'equalto', pos_key)|list|sort(attribute='order') %}
+                    {# Берём только корневые пункты этой позиции #}
+                    {% set pos_root_items = menu_items
+                        | selectattr('position', 'equalto', pos_key)
+                        | rejectattr('parent_id')
+                        | list
+                        | sort(attribute='order') %}
 
-                    {% if pos_items %}
+                    {% set pos_items_all = menu_items
+                        | selectattr('position', 'equalto', pos_key)
+                        | list %}
+
+                    {% if pos_root_items %}
                         <ul class="list-group list-group-flush">
-                            {% for item in pos_items %}
-                                <li class="list-group-item">
-                                    <!-- Первая строка: название + порядок -->
-                                    <div class="d-flex justify-content-between align-items-start">
-                                        <div class="me-2">
-                                            {% if item.parent_id %}
-                                                <span class="text-muted">↳</span>
-                                            {% endif %}
-                                            <strong>{{ item.title }}</strong>
-                                            <div>
-                                                <small class="text-muted">
-                                                    <code>{{ item.url }}</code>
-                                                </small>
-                                            </div>
-                                            {% if item.parent %}
-                                                <small class="text-muted">
-                                                    Родитель: {{ item.parent.title }}
-                                                </small>
-                                            {% endif %}
-                                        </div>
-                                        <span class="badge bg-light text-dark flex-shrink-0">
-                                            #{{ item.order }}
-                                        </span>
-                                    </div>
-
-                                    <!-- Вторая строка: кнопки действий -->
-                                    <div class="mt-2 d-flex gap-1">
-                                        <a href="{{ url_for('admin_menu_edit', id=item.id) }}"
-                                           class="btn btn-sm btn-outline-primary flex-fill">
-                                            <i class="bi bi-pencil"></i>
-                                        </a>
-                                        <form method="POST"
-                                              action="{{ url_for('admin_menu_delete', id=item.id) }}"
-                                              class="flex-fill"
-                                              onsubmit="return confirm('Удалить пункт «{{ item.title }}»?{% if item.children.count() %} Дочерние пункты также потеряют родителя.{% endif %}');">
-                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                                            <button type="submit"
-                                                    class="btn btn-sm btn-outline-danger w-100">
-                                                <i class="bi bi-trash"></i>
-                                            </button>
-                                        </form>
-                                    </div>
-                                </li>
+                            {% for item in pos_root_items %}
+                                {{ render_menu_item(item, pos_items_all, 0) }}
                             {% endfor %}
                         </ul>
                     {% else %}
