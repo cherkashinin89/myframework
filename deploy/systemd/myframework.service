@@ -1,0 +1,28 @@
+[Unit]
+Description=MyFramework Flask Application
+After=network.target
+
+[Service]
+Type=notify
+User=admin
+Group=admin
+WorkingDirectory=/home/admin/apps/myframework
+EnvironmentFile=/home/admin/apps/myframework/.env
+
+ExecStart=/home/admin/apps/myframework/venv/bin/gunicorn \
+    --workers 2 \
+    --bind 127.0.0.1:5000 \
+    --access-logfile - \
+    --error-logfile - \
+    --timeout 120 \
+    wsgi:application
+
+ExecReload=/bin/kill -s HUP $MAINPID
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

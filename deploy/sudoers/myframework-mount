@@ -1,0 +1,4 @@
+admin ALL=(root) NOPASSWD: /usr/bin/mount /mnt/backup
+admin ALL=(root) NOPASSWD: /usr/bin/umount /mnt/backup
+admin ALL=(root) NOPASSWD: /usr/bin/sync
+admin ALL=(root) NOPASSWD: /usr/bin/mountpoint -q /mnt/backup
