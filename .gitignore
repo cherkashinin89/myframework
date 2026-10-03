@@ -44,3 +44,14 @@ comands.txt
 # Кэш IDE
 .cache/
 .pytest_cache/
+
+# Токены и ключи (никогда не коммитить!)
+ghp_*
+gho_*
+ghu_*
+ghs_*
+ghr_*
+*.pem
+*.key
+id_rsa*
+id_ed25519*
