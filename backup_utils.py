@@ -246,9 +246,11 @@ def mount_disk(mount_point, device=None):
         return {'ok': False, 'error': f'Точка монтирования не существует: {mount_point}'}
 
     try:
-        # mount -a монтирует всё по fstab, включая /mnt/backup
+        # Монтируем конкретную точку (правило sudoers для /usr/bin/mount /mnt/backup).
+        # Раньше использовался 'mount -a' — но правило sudoers с аргументом '-a'
+        # не было прописано, и вызов зависел от кеша sudo.
         result = subprocess.run(
-            ['/usr/bin/sudo', '-n', 'mount', '-a'],
+            ['/usr/bin/sudo', '-n', 'mount', mount_point],
             capture_output=True,
             timeout=30,
             text=True
