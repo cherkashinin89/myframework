@@ -34,15 +34,8 @@ def get_engine_url():
 
 # add your model's MetaData object here
 # for 'autogenerate' support
-# from myapp import mymodel
-# target_metadata = mymodel.Base.metadata
 config.set_main_option('sqlalchemy.url', get_engine_url())
 target_db = current_app.extensions['migrate'].db
-
-# other values from the config, defined by the needs of env.py,
-# can be acquired:
-# my_important_option = config.get_main_option("my_important_option")
-# ... etc.
 
 
 def get_metadata():
@@ -67,6 +60,7 @@ FRAMEWORK_TABLES = {
     # НЕ включаем: cloud_file, cloud_share, alembic_version_cloud — это mycloud
 }
 
+
 def include_object(object, name, type_, reflected, compare_to):
     """
     Alembic обрабатывает только таблицы из FRAMEWORK_TABLES.
@@ -78,6 +72,26 @@ def include_object(object, name, type_, reflected, compare_to):
         if not reflected and name not in FRAMEWORK_TABLES:
             return False
     return True
+
+
+def run_migrations_offline():
+    """Run migrations in 'offline' mode.
+
+    This configures the context with just a URL and not an Engine,
+    though an Engine is acceptable here as well. By skipping the Engine
+    creation we don't even need a DBAPI to be available.
+    """
+    url = config.get_main_option("sqlalchemy.url")
+    context.configure(
+        url=url,
+        target_metadata=get_metadata(),
+        literal_binds=True,
+        include_object=include_object,
+    )
+
+    with context.begin_transaction():
+        context.run_migrations()
+
 
 def run_migrations_online():
     """Run migrations in 'online' mode."""
@@ -93,12 +107,6 @@ def run_migrations_online():
     if conf_args.get("process_revision_directives") is None:
         conf_args["process_revision_directives"] = process_revision_directives
 
-    # === ВРЕМЕННЫЙ ОТЛАДОЧНЫЙ ВЫВОД ===
-    print(">>> conf_args keys:", list(conf_args.keys()))
-    print(">>> render_as_batch in conf_args:", 'render_as_batch' in conf_args)
-    print(">>> render_as_batch value:", conf_args.get('render_as_batch'))
-    # === КОНЕЦ ОТЛАДКИ ===
-
     connectable = get_engine()
 
     with connectable.connect() as connection:
@@ -111,11 +119,10 @@ def run_migrations_online():
 
         with context.begin_transaction():
             context.run_migrations()
-    url = config.get_main_option("sqlalchemy.url")
-    context.configure(
-        url=url, target_metadata=get_metadata(), literal_binds=True
-    )
 
-    with context.begin_transaction():
-        context.run_migrations()
 
+# === Точка входа ===
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()
