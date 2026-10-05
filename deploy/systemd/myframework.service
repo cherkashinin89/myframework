@@ -4,12 +4,12 @@ After=network.target
 
 [Service]
 Type=notify
-User=admin
-Group=admin
-WorkingDirectory=/home/admin/apps/myframework
-EnvironmentFile=/home/admin/apps/myframework/.env
+User=__SERVICE_USER__
+Group=__SERVICE_USER__
+WorkingDirectory=/home/deploy/apps/myframework
+EnvironmentFile=/home/deploy/apps/myframework/.env
 
-ExecStart=/home/admin/apps/myframework/venv/bin/gunicorn \
+ExecStart=/home/deploy/apps/myframework/venv/bin/gunicorn \
     --workers 2 \
     --bind 127.0.0.1:5000 \
     --access-logfile - \

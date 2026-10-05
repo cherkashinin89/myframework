@@ -1,3 +1,3 @@
-admin ALL=(root) NOPASSWD: /usr/bin/systemctl restart myframework
-admin ALL=(root) NOPASSWD: /usr/bin/systemctl status myframework
-admin ALL=(root) NOPASSWD: /usr/bin/systemctl is-active myframework
+__SERVICE_USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl restart myframework
+__SERVICE_USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl status myframework
+__SERVICE_USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl is-active myframework

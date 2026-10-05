@@ -3,15 +3,15 @@
 ## Требования
 
 - **ОС:** Debian 12 / Ubuntu 22.04 LTS (x86_64 или ARM)
-- **Пользователь:** `admin` с правами `sudo`
-- **Пакеты:** `git`, `python3.11`, `python3.11-venv`
+- **Пользователь:** `deploy` с правами `sudo`
+- **Пакеты:** `git`, `python3`, `python3-venv`
 - **Диск:** `/mnt/backup` (для бэкапов, опционально)
 
 ## Быстрый старт
 
 ```bash
 # 1. Клонировать репозиторий
-cd /home/admin/apps
+cd /home/deploy/apps
 git clone git@github.com:cherkashinin89/myframework.git
 
 # 2. Настроить .env
