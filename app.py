@@ -3,7 +3,7 @@ import os
 from datetime import datetime
 from flask import (
     Flask, render_template, redirect, url_for, flash, request,
-    jsonify, send_from_directory, current_app
+    jsonify, send_from_directory, send_file, abort, current_app
 )
 from flask_login import (
     login_user, logout_user, login_required, current_user
@@ -33,11 +33,20 @@ from backup_utils import (
 from models import (
     User, Article, Page, MenuItem, UploadedFile,
     Album, Photo, SiteSettings, CloudFile, CloudShare,
+    FileUsage, AuditLog,
 )
 from search_service import (
     search_all, search_articles, search_pages, search_files, highlight
 )
 from slug_utils import slugify, unique_slug
+from cloud_utils import (
+    get_cloud_file, get_cloud_path, media_url,
+    list_cloud_files, user_used_bytes,
+)
+from content_service import (
+    register_file_usages, unregister_file_usages,
+    register_album_photos, check_file_usage, find_unused_files,
+)
 
 # === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
 
@@ -47,6 +56,45 @@ def get_page():
         return max(1, int(request.args.get('page', 1)))
     except (TypeError, ValueError):
         return 1
+
+def _send_cloud_file(file):
+    """
+    Отдаёт облачный файл через send_file.
+    Физический путь: CLOUD_DATA_ROOT/<owner_id>/<stored_name>.
+    """
+    path = get_cloud_path(file)
+    if not path or not os.path.exists(path):
+        abort(404)
+    return send_file(
+        path,
+        mimetype=file.mime_type or 'application/octet-stream',
+        as_attachment=False,
+        download_name=file.name,
+    )
+
+
+def _file_is_publicly_usable(file_id):
+    """
+    Проверяет, привязан ли файл к публичному контенту.
+    Публичным считается:
+      - любая страница (у Page нет is_published);
+      - статья с is_published=True (архив тоже считается публичным);
+      - альбом с is_published=True.
+    """
+    usages = FileUsage.query.filter_by(file_id=file_id).all()
+    for u in usages:
+        if u.entity_type == 'page':
+            if Page.query.get(u.entity_id):
+                return True
+        elif u.entity_type == 'article':
+            a = Article.query.get(u.entity_id)
+            if a and a.is_published:
+                return True
+        elif u.entity_type == 'album':
+            al = Album.query.get(u.entity_id)
+            if al and al.is_published:
+                return True
+    return False
 
 def _menu_depth(item, max_depth=10):
     """Вычисляет глубину пункта меню (0 для корня)."""
@@ -271,6 +319,31 @@ def create_app(config_class=Config):
     def uploaded_file(filename):
         """Публичная отдача файлов из uploads/"""
         return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+
+    # === Публичная отдача облачных файлов ===
+    # Доступ:
+    #   - владелец файла — всегда;
+    #   - админ — всегда;
+    #   - остальные — только если файл привязан к опубликованному
+    #     контенту (статья is_published / страница (все публичны) /
+    #     альбом is_published).
+    @app.route('/media/<int:file_id>')
+    def serve_media(file_id):
+        file = CloudFile.query.get_or_404(file_id)
+        if file.is_folder or not file.stored_name:
+            abort(404)
+
+        # Доступ: владелец / админ
+        if current_user.is_authenticated:
+            if current_user.id == file.owner_id or current_user.is_admin:
+                return _send_cloud_file(file)
+
+        # Публичный доступ — только если файл привязан к публичному контенту
+        if _file_is_publicly_usable(file_id):
+            return _send_cloud_file(file)
+
+        # Иначе — 403, чтобы не палить существование файла
+        abort(403)
 
     # === АУТЕНТИФИКАЦИЯ ===
 
@@ -794,6 +867,22 @@ def create_app(config_class=Config):
 
             db.session.add(article)
             db.session.commit()
+
+            # W3: регистрируем использование облачных файлов в статье
+            try:
+                register_file_usages(
+                    content_html=article.content,
+                    entity_type='article',
+                    entity_id=article.id,
+                    user_id=current_user.id,
+                )
+                db.session.commit()
+            except Exception as e:
+                db.session.rollback()
+                current_app.logger.warning(
+                    f'register_file_usages (article create) failed: {e}'
+                )
+
             flash('Статья создана!', 'success')
             return redirect(url_for('admin_articles'))
 
@@ -828,6 +917,22 @@ def create_app(config_class=Config):
                     article.albums.append(album)
 
             db.session.commit()
+
+            # обновляем реестр использования облачных файлов
+            try:
+                register_file_usages(
+                    content_html=article.content,
+                    entity_type='article',
+                    entity_id=article.id,
+                    user_id=current_user.id,
+                )
+                db.session.commit()
+            except Exception as e:
+                db.session.rollback()
+                current_app.logger.warning(
+                    f'register_file_usages (article edit) failed: {e}'
+                )
+
             flash(f'Статья «{article.title}» обновлена!', 'success')
             return redirect(url_for('admin_articles'))
 
@@ -847,6 +952,14 @@ def create_app(config_class=Config):
         """Удаление статьи"""
         article = Article.query.get_or_404(id)
         article_title = article.title
+
+        # W3: снимаем реестр использования облачных файлов
+        try:
+            unregister_file_usages('article', article.id)
+        except Exception as e:
+            current_app.logger.warning(
+                f'unregister_file_usages (article delete) failed: {e}'
+            )
 
         db.session.delete(article)
         db.session.commit()
@@ -919,6 +1032,21 @@ def create_app(config_class=Config):
 
             db.session.commit()
 
+            # W3: регистрируем использование облачных файлов в странице
+            try:
+                register_file_usages(
+                    content_html=page.content,
+                    entity_type='page',
+                    entity_id=page.id,
+                    user_id=current_user.id,
+                )
+                db.session.commit()
+            except Exception as e:
+                db.session.rollback()
+                current_app.logger.warning(
+                    f'register_file_usages (page create) failed: {e}'
+                )
+
             flash('Страница создана!', 'success')
             return redirect(url_for('admin_pages'))
 
@@ -979,6 +1107,22 @@ def create_app(config_class=Config):
             _save_page_menu(page, form)
 
             db.session.commit()
+
+            # W3: обновляем реестр использования облачных файлов
+            try:
+                register_file_usages(
+                    content_html=page.content,
+                    entity_type='page',
+                    entity_id=page.id,
+                    user_id=current_user.id,
+                )
+                db.session.commit()
+            except Exception as e:
+                db.session.rollback()
+                current_app.logger.warning(
+                    f'register_file_usages (page edit) failed: {e}'
+                )
+
             flash(f'Страница «{page.title}» обновлена!', 'success')
             return redirect(url_for('admin_pages'))
 
@@ -996,6 +1140,14 @@ def create_app(config_class=Config):
         """Удаление страницы"""
         page = Page.query.get_or_404(id)
         page_title = page.title
+
+        # W3: снимаем реестр использования облачных файлов
+        try:
+            unregister_file_usages('page', page.id)
+        except Exception as e:
+            current_app.logger.warning(
+                f'unregister_file_usages (page delete) failed: {e}'
+            )
 
         menu_item = page.menu_item
         if menu_item:

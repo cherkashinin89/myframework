@@ -298,16 +298,16 @@ class Album(db.Model):
 
 
 class Photo(db.Model):
-    """Фотография в альбоме — ссылка на UploadedFile"""
+    """Фотография в альбоме — ссылка на облачный файл (CloudFile)"""
 
     id = db.Column(db.Integer, primary_key=True)
 
     # К какому альбому относится
     album_id = db.Column(db.Integer, db.ForeignKey('album.id'), nullable=False)
 
-    # Какой файл из файлового менеджера используется
-    file_id = db.Column(db.Integer, db.ForeignKey('uploaded_file.id'), nullable=False)
-    file = db.relationship('UploadedFile')
+    # Какой облачный файл используется (W3: перешли с uploaded_file на cloud_file)
+    file_id = db.Column(db.Integer, db.ForeignKey('cloud_file.id', ondelete='CASCADE'), nullable=False)
+    file = db.relationship('CloudFile', foreign_keys=[file_id])
 
     # Подпись (необязательно)
     caption = db.Column(db.String(300))

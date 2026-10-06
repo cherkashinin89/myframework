@@ -51,4 +51,8 @@ class Config:
     FILES_PER_PAGE = 20         # файлов на странице
     USERS_PER_PAGE = 20         # пользователей на странице
     PUBLIC_ARTICLES_PER_PAGE = 6  # статей на главной (публично)
-    ALBUMS_PER_PAGE = 12
+
+    # === W3: Облачное хранилище (общая БД с mycloud) ===
+    # Физический путь к cloud_data/ (общий для myframework и mycloud)
+    CLOUD_DATA_ROOT = os.environ.get('CLOUD_DATA_ROOT') or '/home/deploy/apps/mycloud/cloud_data'
+    
