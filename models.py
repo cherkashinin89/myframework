@@ -3,10 +3,8 @@ from datetime import datetime           # Для работы с датами
 from flask_login import UserMixin       # Миксин для модели пользователя
 from werkzeug.security import generate_password_hash, check_password_hash
 from extensions import db               # Импорт экземпляра БД
-from datetime import datetime
 from flask_login import UserMixin
 from werkzeug.security import generate_password_hash, check_password_hash
-from extensions import db
 
 # Промежуточная таблица для связи пользователей и статей (авторы)
 article_authors = db.Table('article_authors',
@@ -122,7 +120,10 @@ class Article(db.Model):
     
     # Флаг публикации (черновик или опубликовано)
     is_published = db.Column(db.Boolean, default=False)
-    
+
+    # W3: дата перевода в архив (None = не в архиве)
+    archived_at = db.Column(db.DateTime, nullable=True, index=True)
+
     def __repr__(self):
         return f'<Article {self.title}>'
 
@@ -375,6 +376,12 @@ class SiteSettings(db.Model):
     # Время показа каждого слайда в секундах
     slider_delay_seconds = db.Column(db.Integer, default=5, nullable=False)
 
+    # === W3: Архивация статей ===
+    # Через сколько дней после создания статья уходит в архив (0 = не архивировать)
+    archive_after_days = db.Column(db.Integer, default=0, nullable=False)
+    # Сколько дней хранить архив до удаления (0 = хранить вечно)
+    archive_retention_days = db.Column(db.Integer, default=0, nullable=False)
+
     # === Метаданные ===
     updated_at = db.Column(
         db.DateTime,
@@ -485,3 +492,95 @@ class CloudShare(db.Model):
 
     def __repr__(self):
         return f'<CloudShare {self.token}>'
+
+
+
+# =============================================================
+# W3-РЕФАКТОРИНГ: реестр использования облачных файлов
+# =============================================================
+
+class FileUsage(db.Model):
+    """
+    Реестр использования облачных файлов в контенте.
+
+    Позволяет:
+    - запретить удаление файла, пока он привязан к статье/странице/альбому;
+    - найти «где используется файл»;
+    - автоматически удалять файлы, оставшиеся без использования
+      (например, после удаления статьи по сроку архивации).
+
+    entity_type: 'article' | 'page' | 'album' | 'photo'
+    """
+    __tablename__ = 'file_usage'
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    file_id = db.Column(
+        db.Integer,
+        db.ForeignKey('cloud_file.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    file = db.relationship('CloudFile', foreign_keys=[file_id])
+
+    entity_type = db.Column(db.String(32), nullable=False)
+    entity_id = db.Column(db.Integer, nullable=False, index=True)
+
+    # Кто привязал (для аудита). SET NULL — если автор удалён
+    user_id = db.Column(
+        db.Integer,
+        db.ForeignKey('user.id', ondelete='SET NULL'),
+        nullable=True,
+    )
+    user = db.relationship('User', foreign_keys=[user_id])
+
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            'file_id', 'entity_type', 'entity_id',
+            name='uq_file_usage',
+        ),
+        db.Index('ix_file_usage_entity', 'entity_type', 'entity_id'),
+    )
+
+    def __repr__(self):
+        return f'<FileUsage file={self.file_id} {self.entity_type}:{self.entity_id}>'
+
+
+# =============================================================
+# W3-РЕФАКТОРИНГ: журнал значимых действий (аудит)
+# =============================================================
+
+class AuditLog(db.Model):
+    """
+    Журнал значимых действий: делегирование файлов, удаление юзера,
+    блокировка удаления используемого файла, автоочистка и т.п.
+    """
+    __tablename__ = 'audit_log'
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    # Кто выполнил действие (SET NULL, если юзер удалён)
+    user_id = db.Column(
+        db.Integer,
+        db.ForeignKey('user.id', ondelete='SET NULL'),
+        nullable=True,
+        index=True,
+    )
+    user = db.relationship('User', foreign_keys=[user_id])
+
+    # Тип действия: 'user_delete_reassign', 'file_auto_purge', 'file_delete_blocked', ...
+    action = db.Column(db.String(64), nullable=False, index=True)
+
+    # Что затронуто
+    target_type = db.Column(db.String(32), nullable=True)   # 'user', 'file', 'article'
+    target_id = db.Column(db.Integer, nullable=True)
+
+    # Детали в JSON (from/to, счётчики, ошибки)
+    details = db.Column(db.JSON, nullable=True)
+
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+    def __repr__(self):
+        return f'<AuditLog {self.action} by user={self.user_id} at {self.created_at}>'

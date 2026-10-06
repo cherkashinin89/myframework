@@ -57,6 +57,9 @@ FRAMEWORK_TABLES = {
     'article_albums',
     'site_settings',
     'alembic_version',
+    # W3-рефакторинг: реестр использования файлов и журнал действий
+    'file_usage',
+    'audit_log',
     # НЕ включаем: cloud_file, cloud_share, alembic_version_cloud — это mycloud
 }
 
