@@ -1654,14 +1654,24 @@ def create_app(config_class=Config):
         form = AlbumForm(obj=album)
         photos_form = AlbumPhotosForm()
 
-        # Список только изображений из файлового менеджера
-        image_files = (
-            UploadedFile.query
-            .filter_by(file_type='image')
-            .order_by(UploadedFile.uploaded_at.desc())
-            .all()
-        )
-        photos_form.file_ids.choices = [(f.id, f.original_name) for f in image_files]
+        # - изображения из облака.
+        # - редактор видит только свои;
+        # - админ видит все (для модерации).
+        if current_user.is_admin:
+            image_files = (
+                CloudFile.query
+                .filter_by(is_folder=False, is_trashed=False)
+                .filter(CloudFile.mime_type.like('image/%'))
+                .order_by(CloudFile.created_at.desc())
+                .all()
+            )
+        else:
+            image_files = list_cloud_files(
+                owner_id=current_user.id,
+                file_type='image',
+                include_trashed=False,
+            )
+        photos_form.file_ids.choices = [(f.id, f.name) for f in image_files]
 
         # === ВЕТКА 1: сохранение свойств альбома ===
         if 'save_album' in request.form:
@@ -1718,6 +1728,7 @@ def create_app(config_class=Config):
                 .scalar()
             ) or 0
 
+            added_file_ids = []
             for fid in selected:
                 # Не добавлять повторно тот же файл
                 if Photo.query.filter_by(album_id=album.id, file_id=fid).first():
@@ -1728,9 +1739,20 @@ def create_app(config_class=Config):
                     file_id=fid,
                     order=max_order
                 ))
+                added_file_ids.append(fid)
                 added += 1
 
             db.session.commit()
+
+            # W3: регистрируем использование файлов в альбоме
+            try:
+                register_album_photos(album.id, added_file_ids, current_user.id)
+                db.session.commit()
+            except Exception as e:
+                db.session.rollback()
+                current_app.logger.warning(
+                    f'register_album_photos failed: {e}'
+                )
 
             if added:
                 flash(f'Добавлено фотографий: {added}.', 'success')
@@ -1749,9 +1771,18 @@ def create_app(config_class=Config):
     @app.route('/admin/albums/<int:id>/delete', methods=['POST'])
     @login_required
     def admin_album_delete(id):
-        """Удаление альбома (сами файлы в uploads/ остаются)"""
+        """Удаление альбома (облачные файлы остаются в облаке)"""
         album = Album.query.get_or_404(id)
         title = album.title
+
+        # W3: снимаем реестр использования файлов
+        try:
+            unregister_file_usages('album', album.id)
+        except Exception as e:
+            current_app.logger.warning(
+                f'unregister_file_usages (album delete) failed: {e}'
+            )
+
         db.session.delete(album)
         db.session.commit()
         flash(f'Альбом «{title}» удалён.', 'info')
@@ -1760,10 +1791,27 @@ def create_app(config_class=Config):
     @app.route('/admin/albums/<int:album_id>/photos/<int:photo_id>/delete', methods=['POST'])
     @login_required
     def admin_album_photo_delete(album_id, photo_id):
-        """Удаление фото из альбома (файл в uploads/ остаётся)"""
+        """Удаление фото из альбома (облачный файл остаётся в облаке)"""
         photo = Photo.query.filter_by(id=photo_id, album_id=album_id).first_or_404()
+        file_id = photo.file_id
+
         db.session.delete(photo)
         db.session.commit()
+
+        # W3: снимаем FileUsage для этого файла в этом альбоме
+        try:
+            FileUsage.query.filter_by(
+                file_id=file_id,
+                entity_type='album',
+                entity_id=album_id,
+            ).delete(synchronize_session=False)
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            current_app.logger.warning(
+                f'FileUsage cleanup (album photo delete) failed: {e}'
+            )
+
         flash('Фотография удалена из альбома.', 'info')
         return redirect(url_for('admin_album_edit', id=album_id))
 
