@@ -66,8 +66,8 @@
                     {% for p in album.photos %}
                     <div class="col-6 col-md-4" data-photo-id="{{ p.id }}">
                         <div class="position-relative border rounded overflow-hidden">
-                            {% set thumb = p.file.thumbnail_name or p.file.stored_name %}
-                            <img src="{{ url_for('uploaded_file', filename=thumb) }}" class="w-100"
+                            {# W3: файл — облачный (CloudFile), отдаём через /media/<id> #}
+                            <img src="{{ url_for('serve_media', file_id=p.file_id) }}" class="w-100"
                                 style="aspect-ratio: 1/1; object-fit: cover; cursor: grab;" alt="">
 
                             {# Плашка «обложка» #}
@@ -81,15 +81,23 @@
                                 <form method="POST"
                                     action="{{ url_for('admin_album_set_cover', album_id=album.id, photo_id=p.id) }}">
                                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                                    <button class="btn btn-sm btn-outline-success" title="Сделать обложкой">
+                                    {% if p.is_featured %}
+                                    <button class="btn btn-sm btn-success"
+                                            title="Убрать из слайдера (обложка → первое фото)">
+                                        <i class="bi bi-star-fill"></i>
+                                    </button>
+                                    {% else %}
+                                    <button class="btn btn-sm btn-outline-success"
+                                            title="Сделать обложкой и добавить в слайдер">
                                         <i class="bi bi-star"></i>
                                     </button>
+                                    {% endif %}
                                 </form>
                                 <form method="POST"
                                     action="{{ url_for('admin_album_photo_delete', album_id=album.id, photo_id=p.id) }}"
                                     onsubmit="return confirm('Удалить фото из альбома?');">
                                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                                    <button class="btn btn-sm btn-outline-danger">
+                                    <button class="btn btn-sm btn-outline-danger" title="Удалить из альбома">
                                         <i class="bi bi-trash"></i>
                                     </button>
                                 </form>
@@ -108,7 +116,9 @@
         </div>
 
         <div class="card">
-            <div class="card-header"><strong>Добавить фото из файлового менеджера</strong></div>
+            <div class="card-header">
+                <strong>Добавить фото из {% if current_user.is_admin %}облака{% else %}моего облака{% endif %}</strong>
+            </div>
             <div class="card-body">
                 <form method="POST" novalidate>
                     {{ photos_form.hidden_tag() }}
@@ -120,10 +130,17 @@
                         <div class="form-check">
                             <input class="form-check-input" type="checkbox" name="file_ids" value="{{ f.id }}"
                                 id="f{{ f.id }}">
-                            <label class="form-check-label" for="f{{ f.id }}">
-                                <img src="{{ url_for('uploaded_file', filename=f.stored_name) }}"
+                            <label class="form-check-label d-flex align-items-center gap-2" for="f{{ f.id }}">
+                                <img src="{{ url_for('serve_media', file_id=f.id) }}"
                                     style="width: 40px; height: 40px; object-fit: cover; border-radius: 3px;">
-                                {{ f.original_name }}
+                                <span>
+                                    {{ f.name }}
+                                    {% if current_user.is_admin and f.owner_id != current_user.id %}
+                                    <small class="text-muted d-block">
+                                        владелец: {{ f.owner.username if f.owner else '—' }}
+                                    </small>
+                                    {% endif %}
+                                </span>
                             </label>
                         </div>
                         {% endfor %}
@@ -133,8 +150,13 @@
                     </button>
                     {% else %}
                     <p class="text-muted mb-0">
-                        В файловом менеджере нет изображений.
-                        <a href="{{ url_for('admin_files') }}">Загрузить</a>
+                        В облаке нет изображений.
+                        {% if current_user.is_admin %}
+                            <a href="{{ url_for('admin_cloud_users') }}">Перейти в облако</a>.
+                        {% else %}
+                            Загрузите файлы через
+                            <a href="http://{{ request.host.split(':')[0] }}:5001/" target="_blank">облако</a>.
+                        {% endif %}
                     </p>
                     {% endif %}
                 </form>

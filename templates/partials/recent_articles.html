@@ -18,24 +18,18 @@
         {% for article in recent_articles %}
         <a href="{{ url_for('show_article', id=article.id) }}" class="recent-article-card">
 
-            {# === Обложка (уменьшенная) === #}
-            {% set cover_file = None %}
-            {% if article.albums %}
-                {% set first_album = article.albums[0] %}
+            {# === Обложка (уменьшенная). W3: файлы — облачные, /media/<file_id> === #}
+            {% set first_album = article.albums.first() if article.albums else None %}
+            {% if first_album %}
                 {% set cover_photo = first_album.cover_photo or (first_album.photos[0] if first_album.photos else None) %}
                 {% if cover_photo %}
-                    {% set cover_file = cover_photo.file %}
-                {% endif %}
-            {% endif %}
-
-            {% if cover_file %}
-                {% set cover_thumb = cover_file.thumbnail_name or cover_file.stored_name %}
                 <div class="recent-article-cover">
-                    <img src="{{ url_for('uploaded_file', filename=cover_thumb) }}"
+                    <img src="{{ url_for('serve_media', file_id=cover_photo.file_id) }}"
                          alt="{{ article.title }}"
                          loading="lazy"
                          decoding="async">
                 </div>
+                {% endif %}
             {% endif %}
 
             <div class="recent-article-body">

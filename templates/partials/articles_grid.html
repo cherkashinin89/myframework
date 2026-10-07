@@ -13,13 +13,12 @@
         <article class="article-card">
             <a href="{{ url_for('show_article', id=article.id) }}" class="article-card-link">
 
-                {# === Обложка === #}
-                {% if article.albums and article.albums[0].photos %}
-                    {% set cover = article.albums[0].cover_photo or article.albums[0].photos[0] %}
-                    {% set cover_file = cover.file %}
-                    {% set cover_thumb = cover_file.thumbnail_name or cover_file.stored_name %}
+                {# === Обложка. W3: файлы — облачные, /media/<file_id> === #}
+                {% set first_album = article.albums.first() if article.albums else None %}
+                {% if first_album and first_album.photos %}
+                    {% set cover = first_album.cover_photo or first_album.photos[0] %}
                     <div class="article-card-cover">
-                        <img src="{{ url_for('uploaded_file', filename=cover_thumb) }}"
+                        <img src="{{ url_for('serve_media', file_id=cover.file_id) }}"
                              alt="{{ article.title }}"
                              loading="lazy"
                              decoding="async">

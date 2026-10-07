@@ -1744,6 +1744,20 @@ def create_app(config_class=Config):
 
             db.session.commit()
 
+            db.session.commit()
+
+            # W3: если у альбома ещё нет обложки — ставим первое фото по order
+            if not album.cover_photo_id and added_file_ids:
+                first_photo = (
+                    Photo.query
+                    .filter_by(album_id=album.id)
+                    .order_by(Photo.order)
+                    .first()
+                )
+                if first_photo:
+                    album.cover_photo_id = first_photo.id
+                    db.session.commit()
+
             # W3: регистрируем использование файлов в альбоме
             try:
                 register_album_photos(album.id, added_file_ids, current_user.id)
@@ -1818,12 +1832,55 @@ def create_app(config_class=Config):
     @app.route('/admin/albums/<int:album_id>/cover/<int:photo_id>', methods=['POST'])
     @login_required
     def admin_album_set_cover(album_id, photo_id):
-        """Назначение обложки альбома"""
+        """
+        W3: звезда — сделать фото обложкой И отправить в слайдер.
+        Повторный клик по тому же фото — снять с обложки и из слайдера.
+        Лимит слайдера — 10 фото; при превышении самое старое
+        (по added_at) вытесняется.
+        """
         album = Album.query.get_or_404(album_id)
         photo = Photo.query.filter_by(id=photo_id, album_id=album_id).first_or_404()
+
+        # === Снятие (повторный клик) ===
+        if photo.is_featured:
+            photo.is_featured = False
+            first = (
+                Photo.query
+                .filter_by(album_id=album_id)
+                .order_by(Photo.order)
+                .first()
+            )
+            album.cover_photo_id = first.id if first else None
+            db.session.commit()
+            flash('Фото убрано из слайдера.', 'info')
+            return redirect(url_for('admin_album_edit', id=album_id))
+
+        # === Установка ===
+        featured_count = Photo.query.filter_by(is_featured=True).count()
+        if featured_count >= 10:
+            oldest = (
+                Photo.query
+                .filter_by(is_featured=True)
+                .order_by(Photo.added_at.asc())
+                .first()
+            )
+            if oldest:
+                oldest.is_featured = False
+                if oldest.album.cover_photo_id == oldest.id:
+                    first_in_album = (
+                        Photo.query
+                        .filter_by(album_id=oldest.album_id)
+                        .order_by(Photo.order)
+                        .first()
+                    )
+                    oldest.album.cover_photo_id = (
+                        first_in_album.id if first_in_album else None
+                    )
+
+        photo.is_featured = True
         album.cover_photo_id = photo.id
         db.session.commit()
-        flash('Обложка обновлена.', 'success')
+        flash('Фото стало обложкой и добавлено в слайдер.', 'success')
         return redirect(url_for('admin_album_edit', id=album_id))
 
     @app.route('/admin/albums/<int:album_id>/reorder', methods=['POST'])
@@ -1838,31 +1895,6 @@ def create_app(config_class=Config):
                 photo.order = idx
         db.session.commit()
         return jsonify({'ok': True})
-
-    @app.route('/admin/albums/<int:album_id>/photos/<int:photo_id>/featured', methods=['POST'])
-    @login_required
-    def admin_album_toggle_featured(album_id, photo_id):
-        """Переключает флаг «избранное» у фотографии"""
-        photo = Photo.query.filter_by(id=photo_id, album_id=album_id).first_or_404()
-
-        # Проверяем лимит при добавлении
-        if not photo.is_featured:
-            featured_count = Photo.query.filter_by(is_featured=True).count()
-            if featured_count >= 10:
-                flash('Достигнут лимит избранных фото (10). '
-                      'Уберите одну из закладок в других альбомах.', 'warning')
-                return redirect(url_for('admin_album_edit', id=album_id))
-
-        # Переключаем
-        photo.is_featured = not photo.is_featured
-        db.session.commit()
-
-        if photo.is_featured:
-            flash(f'Фото добавлено в избранное для слайдера.', 'success')
-        else:
-            flash(f'Фото убрано из избранного.', 'info')
-
-        return redirect(url_for('admin_album_edit', id=album_id))
 
     # --- API для редактора (TinyMCE) ---
 
@@ -1893,6 +1925,69 @@ def create_app(config_class=Config):
                 'type': f.file_type,
                 'size': f.size_human(),
                 'date': f.uploaded_at.strftime('%d.%m.%Y %H:%M'),
+            })
+
+        return jsonify(data)
+
+    @app.route('/admin/api/cloud-files')
+    @login_required
+    @editor_required
+    def admin_api_cloud_files():
+        """
+        JSON-список облачных файлов для модального окна редактора.
+
+        Логика доступа:
+          - админ: видит все файлы всех юзеров, с фильтром ?owner=<id>
+          - редактор: только свои
+        """
+        type_filter = request.args.get('type', 'all')
+        owner_param = request.args.get('owner', type=int)
+
+        # База: файлы (не папки), не в корзине
+        q = CloudFile.query.filter_by(is_folder=False, is_trashed=False)
+
+        if current_user.is_admin:
+            # Админ может фильтровать по владельцу, иначе — все
+            if owner_param:
+                q = q.filter(CloudFile.owner_id == owner_param)
+        else:
+            # Редактор — только свои
+            q = q.filter(CloudFile.owner_id == current_user.id)
+
+        if type_filter != 'all':
+            q = q.filter(CloudFile.mime_type.like(f'{type_filter}/%'))
+
+        files = q.order_by(CloudFile.created_at.desc()).all()
+
+        data = []
+        for f in files:
+            # Определяем category (image / video / audio / document / archive / other)
+            mime = (f.mime_type or '').lower()
+            if mime.startswith('image/'):
+                ftype = 'image'
+            elif mime.startswith('video/'):
+                ftype = 'video'
+            elif mime.startswith('audio/'):
+                ftype = 'audio'
+            elif any(x in mime for x in ('zip', 'tar', 'gzip', 'rar', '7z')):
+                ftype = 'archive'
+            elif any(x in mime for x in ('pdf', 'word', 'excel', 'powerpoint', 'text', 'officedocument')):
+                ftype = 'document'
+            else:
+                ftype = 'other'
+
+            data.append({
+                'id': f.id,
+                'name': f.name,
+                'url': url_for('serve_media', file_id=f.id),
+                'public_url': url_for('serve_media', file_id=f.id),
+                'thumbnail_url': url_for('serve_media', file_id=f.id)
+                    if ftype == 'image' else None,
+                'type': ftype,
+                'size': f.size_human(),
+                'date': f.created_at.strftime('%d.%m.%Y %H:%M'),
+                'owner_id': f.owner_id,
+                'owner_name': f.owner.username if f.owner else '—',
             })
 
         return jsonify(data)

@@ -31,10 +31,10 @@
 <div class="row g-3">
     {% for p in photos %}
     <div class="col-6 col-md-4 col-lg-3">
-        {% set thumb = p.file.thumbnail_name or p.file.stored_name %}
+        {# W3: фото альбома — облачный файл, /media/<file_id> #}
         <div class="album-photo">
-            <img src="{{ url_for('uploaded_file', filename=thumb) }}"
-                data-full="{{ url_for('uploaded_file', filename=p.file.stored_name) }}" data-lightbox
+            <img src="{{ url_for('serve_media', file_id=p.file_id) }}"
+                data-full="{{ url_for('serve_media', file_id=p.file_id) }}" data-lightbox
                 alt="{{ p.caption or album.title }}" loading="lazy" decoding="async">
             {% if p.caption %}
             <div class="album-photo-caption">{{ p.caption }}</div>

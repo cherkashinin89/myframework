@@ -85,10 +85,10 @@
     <div class="row g-2">
         {% for p in album.photos %}
         <div class="col-4 col-md-3 col-lg-2">
-            {% set thumb = p.file.thumbnail_name or p.file.stored_name %}
+            {# W3: файлы — облачные, /media/<file_id> #}
             <a href="{{ url_for('gallery_album', slug=album.slug) }}" class="article-album-thumb">
-                <img src="{{ url_for('uploaded_file', filename=thumb) }}"
-                    data-full="{{ url_for('uploaded_file', filename=p.file.stored_name) }}" data-lightbox
+                <img src="{{ url_for('serve_media', file_id=p.file_id) }}"
+                    data-full="{{ url_for('serve_media', file_id=p.file_id) }}" data-lightbox
                     alt="{{ p.caption or album.title }}" loading="lazy" decoding="async">
             </a>
         </div>

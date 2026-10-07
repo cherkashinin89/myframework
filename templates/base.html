@@ -53,23 +53,20 @@
             {# Слой 1: фон — размытые копии слайдов #}
             <div class="fan-bg" id="fanBg">
                 {% for photo in slider_photos %}
-                {% set f_file = photo.file %}
-                {% set f_thumb = f_file.thumbnail_name or f_file.stored_name %}
+                {# W3: слайдер — из облачных файлов, /media/<file_id> #}
                 <div class="fan-bg-image {% if loop.first %}is-active{% endif %}" data-index="{{ loop.index0 }}"
-                    style="background-image: url('{{ url_for('uploaded_file', filename=f_thumb) }}');"></div>
+                    style="background-image: url('{{ url_for('serve_media', file_id=photo.file_id) }}');"></div>
                 {% endfor %}
             </div>
 
             {# Слой 2: слайды #}
             <div class="fan-stage">
                 {% for photo in slider_photos %}
-                {% set f_file = photo.file %}
-                {% set f_thumb = f_file.thumbnail_name or f_file.stored_name %}
                 <div class="fan-slide-wrapper" style="--i: {{ loop.index0 }};">
                     <div class="fan-slide" data-index="{{ loop.index0 }}">
-                        <img src="{{ url_for('uploaded_file', filename=f_thumb) }}"
-                            data-thumb="{{ url_for('uploaded_file', filename=f_thumb) }}"
-                            data-full="{{ url_for('uploaded_file', filename=f_file.stored_name) }}"
+                        <img src="{{ url_for('serve_media', file_id=photo.file_id) }}"
+                            data-thumb="{{ url_for('serve_media', file_id=photo.file_id) }}"
+                            data-full="{{ url_for('serve_media', file_id=photo.file_id) }}"
                             alt="{{ photo.caption or site_settings.site_title }}" loading="lazy" decoding="async">
 
                         {# Кнопка с названием альбома — по центру активного слайда #}

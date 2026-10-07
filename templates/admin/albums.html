@@ -35,9 +35,8 @@
                 <td>
                     {% set cover = album.cover_photo or (album.photos[0] if album.photos else None) %}
                     {% if cover %}
-                    {% set cover_file = cover.file %}
-                    {% set cover_thumb = cover_file.thumbnail_name or cover_file.stored_name %}
-                    <img src="{{ url_for('uploaded_file', filename=cover_thumb) }}"
+                    {# W3: обложка — облачный файл, /media/<file_id> #}
+                    <img src="{{ url_for('serve_media', file_id=cover.file_id) }}"
                         style="width: 60px; height: 60px; object-fit: cover; border-radius: 4px;" alt="" loading="lazy">
                     {% else %}
                     <div class="bg-light d-flex align-items-center justify-content-center"

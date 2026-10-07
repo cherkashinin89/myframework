@@ -324,8 +324,8 @@
                                 {% if not cover and album.photos %}
                                     {% set cover = album.photos[0] %}
                                 {% endif %}
-                                {% if cover and cover.file %}
-                                    <img src="{{ url_for('uploaded_file', filename=cover.file.stored_name) }}"
+                                {% if cover %}
+                                    <img src="{{ url_for('serve_media', file_id=cover.file_id) }}"
                                          class="img-fluid rounded mb-1"
                                          style="aspect-ratio: 4/3; object-fit: cover; width: 100%;"
                                          alt="{{ album.title }}">

@@ -442,6 +442,13 @@ class CloudFile(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     owner_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
+
+    # Relationship на владельца (для отображения в UI админа)
+    owner = db.relationship(
+        'User',
+        foreign_keys=[owner_id],
+        backref=db.backref('cloud_files', lazy='dynamic'),
+    )
     parent_id = db.Column(db.Integer, db.ForeignKey('cloud_file.id'), nullable=True, index=True)
     name = db.Column(db.String(255), nullable=False)
     is_folder = db.Column(db.Boolean, default=False, nullable=False, index=True)
